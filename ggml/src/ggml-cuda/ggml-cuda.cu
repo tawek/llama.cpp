@@ -1828,7 +1828,8 @@ static void ggml_cuda_op_mul_mat(
         CUDA_CHECK(cudaEventRecord(src0_extra->events[ctx.device][0], ctx.stream()));
     }
 
-    const int64_t src1_col_stride = split && used_devices > 1 ? MUL_MAT_SRC1_COL_STRIDE : ne11;
+    const bool chunk_mmvf = op == ggml_cuda_op_mul_mat_vec_f && ne01 == 1 && ne11 > 8;
+    const int64_t src1_col_stride = split && used_devices > 1 ? MUL_MAT_SRC1_COL_STRIDE : chunk_mmvf ? 8 : ne11;
     for (int64_t src1_col_0 = 0; src1_col_0 < ne11; src1_col_0 += src1_col_stride) {
         const int64_t is = split ? (src1_col_0/src1_col_stride) % GGML_CUDA_MAX_STREAMS : 0;
         const int64_t src1_ncols = src1_col_0 + src1_col_stride > ne11 ? ne11 - src1_col_0 : src1_col_stride;
@@ -2400,6 +2401,13 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
     bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
+    bool use_mul_mat_vec_f_forced = use_mul_mat_vec_f && src0->type == GGML_TYPE_F32 && src0->ne[1] == 1 && src0->ne[0] % 2 == 0;
+
+    const size_t src0_ts = ggml_type_size(src0->type);
+    use_mul_mat_vec_f_forced = use_mul_mat_vec_f_forced && src0->nb[0] == src0_ts;
+    for (size_t i = 1; i < GGML_MAX_DIMS; ++i) {
+        use_mul_mat_vec_f_forced = use_mul_mat_vec_f_forced && src0->nb[i] % (2*src0_ts) == 0;
+    }
 
     bool any_gpus_with_slow_fp16 = false;
 
@@ -2457,6 +2465,8 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         // general KQ + KQV multi-batch without FlashAttention
         ggml_cuda_mul_mat_batched_cublas(ctx, src0, src1, dst);
     } else if (use_mul_mat_vec_f) {
+        ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_f, nullptr);
+    } else if (use_mul_mat_vec_f_forced) {
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_f, nullptr);
     } else if (use_mul_mat_vec_q) {
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
