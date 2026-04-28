@@ -1369,6 +1369,7 @@ struct ggml_backend_cuda_context {
 
     ggml_cuda_graph * cuda_graph(const void * first_node_ptr) {
         const int64_t time_now = ggml_time_us();
+        static constexpr size_t max_cuda_graphs = 8;
 
         // sweep every 5s, evicting cuda graphs unused for >=10s
         if (time_now - last_graph_eviction_sweep >= 5'000'000) {
@@ -1384,6 +1385,15 @@ struct ggml_backend_cuda_context {
 
         auto it = cuda_graphs.find(first_node_ptr);
         if (it == cuda_graphs.end()) {
+            while (cuda_graphs.size() >= max_cuda_graphs) {
+                auto oldest = cuda_graphs.begin();
+                for (auto cur = cuda_graphs.begin(); cur != cuda_graphs.end(); ++cur) {
+                    if (cur->second->last_used_time < oldest->second->last_used_time) {
+                        oldest = cur;
+                    }
+                }
+                cuda_graphs.erase(oldest);
+            }
             it = cuda_graphs.emplace(first_node_ptr, std::make_unique<ggml_cuda_graph>()).first;
         }
         it->second->last_used_time = time_now;
