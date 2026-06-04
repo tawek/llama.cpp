@@ -29,7 +29,7 @@ All options from `common/arg.cpp` and `tools/server/server.cpp`.
 | 9 | Penalties | `--repeat-last-n`, `--repeat-penalty`, `--presence-penalty`, `--frequency-penalty`, `--ignore-eos` |
 | 10 | DRY | `--dry-multiplier`, `--dry-base`, `--dry-allowed-length`, `--dry-penalty-last-n`, `--dry-sequence-breaker` |
 | 11 | Grammar | `-l/--logit-bias`, `--grammar`, `--grammar-file`, `-j/--json-schema`, `-jf/--json-schema-file` |
-| 12 | Speculative | `--spec-draft-model/-md`, `--spec-type`, `--spec-draft-n-max`, `--spec-draft-n-min`, `--spec-draft-p-split`, `--spec-draft-p-min`, `--spec-draft-device`, `--spec-draft-ngl` |
+| 12 | Speculative | `--spec-type` (ordered list: ngram-simple/ngram-map-k/ngram-map-k4v/ngram-mod/ngram-cache/draft-simple/draft-eagle3/draft-mtp), `--spec-draft-n-max`, `--spec-draft-n-min`, draft model flags (`--spec-draft-model`, `--spec-draft-hf`, `--spec-draft-ngl`, etc.), ngram flags per type (`--spec-ngram-*`), lookup cache (`--lookup-cache-static/dynamic`) |
 | 13 | Prompt/Input | `-p/--prompt`, `-sys/--system-prompt`, `-f/--file`, `--in-file`, `-bf/--binary-file`, `-e/--escape`, `-r/--reverse-prompt`, `-sp/--special`, `-i/--interactive`, `-if/--interactive-first`, `-mli/--multiline-input`, `--in-prefix`, `--in-suffix`, `--warmup`, `--perf` |
 | 14 | Chat | `--chat-template`, `--chat-template-file`, `--reasoning-format`, `--reasoning-budget`, `--jinja`, `--prefill-assistant` |
 | 15 | Display | `--verbose-prompt`, `--display-prompt`, `-co/--color`, `-sps/--slot-prompt-similarity`, `--simple-io`, `--show-timings` |
@@ -52,6 +52,9 @@ All options from `common/arg.cpp` and `tools/server/server.cpp`.
 | string (comma-sep) | `text` | tk.Entry (StringVar) | `-ts 0.5,0.3,0.2` |
 | string (free) | `text` | tk.Entry (StringVar) | `--prompt "hello"` |
 | string (key=value) | `text` | tk.Entry (StringVar) | `--override-kv KEY=TYPE:VALUE` |
+| ordered enum list | `ordered_list_of_options` | `_OrderedListSelector` dual-list widget | `--spec-type ngram-simple,draft-mtp` |
+
+`ordered_list_of_options` widget: two `tk.Listbox` columns (Available / Selected) with `>>` / `<<` transfer buttons and Up / Down reorder buttons. Internal `StringVar` holds comma-joined selection. Available choices come from `choices` in the registry entry.
 
 File picker filters by option key:
 
@@ -93,7 +96,7 @@ File picker filters by option key:
 | `--spec-draft-p-split` | 0.1 | `--spec-draft-p-min` | 0.75 |
 | `--rope-freq-scale` | 1.0 | `--ctx-checkpoints` | 32 |
 | `--checkpoint-every-n-tokens` | 8192 | `--cache-ram` | 8192 MiB |
-| `--cache-type-k` | F16 | `--cache-type-v` | F16 |
+| `--cache-type-k` | f16 | `--cache-type-v` | f16 |
 | `--slot-prompt-similarity` | 0.1 | `--cache-reuse` | 0 |
 | `--grp-attn-n` | 1 | `--grp-attn-w` | 512 |
 | `--fit` | true | `--fit-ctx` | 4096 |
@@ -208,10 +211,11 @@ File picker filters by option key:
 ### 5.2 Config Tab
 
 A scrollable canvas (tk.Canvas + ttk.Scrollbar, mouse-wheel bound) containing:
-- **Profile toolbar** at top (row 0) — profile dropdown, Save/Save As/Delete buttons
-- **llama-server binary path** row (row 2) — Entry + Browse button (default: `llama-server` on PATH)
+- **Profile toolbar** at top (row 0) — profile dropdown, Save / Save As... / Rename / Delete buttons
 - **18 collapsible sections** (CollapsiblePane widgets)
 - **Command Preview** frame at bottom
+
+The **llama-server binary path** and **startup health-check timeout** are no longer per-profile settings — they live in the **Settings dialog** (toolbar button, section 9).
 
 Each section is a `CollapsiblePane` (extends `ttk.LabelFrame`) with:
 - **⬟ arrow** (▾ expanded / ▸ collapsed) + **bold title** — both clickable
@@ -238,16 +242,25 @@ Sections:
 
 1. **Model Loading** — model (file), lora, lora_scaled, mmproj (file), image, audio, mlock, mmap, direct_io, check_tensors, tags, alias, override_kv, lora_init_without_apply
 2. **GPU & Acceleration** — gpu_layers, split_mode (dropdown), tensor_split, main_gpu, device, rpc, cpu_moe, n_cpu_moe, fit, fit_print, fit_target, fit_ctx
-3. **Cache & KV** — cache_prompt, cache_reuse, cache_ram, cache_type_k (dropdown: F16/F32/I8/I4), cache_type_v (dropdown), kv_unified, cache_idle_slots, slot_save_path, ctx_checkpoints, checkpoint_every_n
+3. **Cache & KV** — cache_prompt, cache_reuse, cache_ram, cache_type_k (dropdown: f16/f32/bf16/q8_0/q4_0/q4_1/iq4_nl/q5_0/q5_1), cache_type_v (same dropdown), kv_unified, cache_idle_slots, slot_save_path, ctx_checkpoints, checkpoint_every_n
 4. **Context & Batch** — ctx_size, batch_size, ubatch_size, predict, keep, swa_full
 5. **CPU** — threads, threads_batch, cpu_mask, cpu_range, cpu_strict, prio, poll, prio_prompt, prio_predict, prio_batch, prio_draft
-6. **RoPE & Scaling** — rope_scaling (dropdown: none/linear/yarn), rope_scale, rope_freq_base, rope_freq_scale, yarn_orig_ctx, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, grp_attn_n, grp_attn_w, flash_attn (checkbox)
+6. **RoPE & Scaling** — rope_scaling (dropdown: none/linear/yarn), rope_scale, rope_freq_base, rope_freq_scale, yarn_orig_ctx, yarn_ext_factor, yarn_attn_factor, yarn_beta_fast, yarn_beta_slow, grp_attn_n, grp_attn_w, flash_attn (dropdown: auto/on/off, default auto)
 7. **Sampling** — temperature, top_k, top_p, min_p, top_n_sigma, xtc_prob, xtc_threshold, typical, adaptive_target, adaptive_decay, dynatemp_range, dynatemp_exp, seed, samplers, sampler_seq
 8. **Mirostat** — mirostat (radio: 0/1/2), mirostat_lr, mirostat_ent
 9. **Penalties** — repeat_last_n, repeat_penalty, presence_penalty, frequency_penalty, ignore_eos (checkbox)
 10. **DRY** — dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n, dry_sequence_breaker
 11. **Grammar** — logit_bias, grammar (file), grammar_file, json_schema, json_schema_file
-12. **Speculative** — spec_draft_model (file), spec_type (dropdown: ngram/mtp/lookup/server), spec_draft_n_max, spec_draft_n_min, spec_draft_p_split, spec_draft_p_min, spec_draft_device, spec_draft_ngl
+12. **Speculative** — layout differs from other sections (sentinel `'__speculative__'` in SECTIONS):
+    - **Always-visible** top rows: spec_type (`ordered_list_of_options`, choices: ngram-simple / ngram-map-k / ngram-map-k4v / ngram-mod / ngram-cache / draft-simple / draft-eagle3 / draft-mtp), spec_draft_n_max, spec_draft_n_min
+    - **Per-type sub-panels** (`CollapsiblePane`) — shown/hidden based on which types appear in spec_type value:
+      - **Draft Model** (shown for any of draft-simple, draft-eagle3, draft-mtp): spec_draft_model, spec_draft_hf, spec_draft_threads, spec_draft_threads_batch, spec_draft_cpu_mask, spec_draft_cpu_range, spec_draft_cpu_strict, spec_draft_prio, spec_draft_poll, spec_draft_type_k, spec_draft_type_v, spec_draft_cpu_moe, spec_draft_n_cpu_moe, spec_draft_override_tensor, spec_draft_p_split, spec_draft_p_min, spec_draft_device, spec_draft_ngl
+      - **Ngram Simple** (ngram-simple): ngram_min, ngram_max, ngram_no_alloc, spec_ngram_simple_size_n, spec_ngram_simple_size_m, spec_ngram_simple_min_hits
+      - **Ngram Map-k** (ngram-map-k): ngram_min, ngram_max, ngram_no_alloc, spec_ngram_map_k_size_n, spec_ngram_map_k_size_m, spec_ngram_map_k_min_hits
+      - **Ngram Map-k4v** (ngram-map-k4v): ngram_min, ngram_max, ngram_no_alloc, spec_ngram_map_k4v_size_n, spec_ngram_map_k4v_size_m, spec_ngram_map_k4v_min_hits
+      - **Ngram Mod** (ngram-mod): ngram_min, ngram_max, ngram_no_alloc, spec_ngram_mod_n_match, spec_ngram_mod_n_max, spec_ngram_mod_n_min
+      - **Ngram Cache** (ngram-cache): lookup_cache_static, lookup_cache_dynamic
+    - Sub-panels are toggled by a `trace_add('write', ...)` on the spec_type `_var`
 13. **Prompt/Input** — prompt, system_prompt, file, in_file, binary_file, reverse_prompt, escape, special, interactive, interactive_first, multiline_input, in_prefix, in_suffix, warmup, perf
 14. **Chat** — chat_template, chat_template_file, reasoning_format (dropdown: auto/verbose/off), reasoning_budget, jinja, prefill_assistant (checkbox)
 15. **Display** — verbose_prompt, display_prompt, color (dropdown: on/off/auto), slot_prompt_similarity, simple_io, show_timings
@@ -292,7 +305,7 @@ Sections:
 
 ```
 +----------------------------------------------------------+
-| Filter: [All] [Info] [Warn] [Error] [Clear]              |
+| Filter: [All] [Info] [Warn] [Error]          [Clear]     |
 +----------------------------------------------------------+
 | [14:23:01] [INFO ] prompt eval time = 123.45 ms ...     |
 | [14:23:02] [INFO ]        eval time = 67.89 ms ...      |
@@ -304,6 +317,8 @@ Sections:
 | [Save Log] [Export CSV]                                  |
 +----------------------------------------------------------+
 ```
+
+**Internal storage**: `_log_lines: list[tuple[str, str, str]]` — `(level, timestamp_str, text)`. Timestamps are captured at `add_log_line()` time via `time.strftime('%H:%M:%S')`. Filter radio buttons call `_reapply_filter()` on write, which rebuilds the text widget from stored tuples using original timestamps.
 
 ### 5.5 Slots Tab
 
@@ -373,12 +388,13 @@ Profiles provide named presets of all configuration option values, persisted acr
 ### 7.2 Profile Toolbar
 
 ```
-[ Profile: [Default  v] ] [Save] [Save As...] [Delete]
+[ Profile: [Default  v] ] [Save] [Save As...] [Rename] [Delete]
 ```
 
 - **Profile dropdown**: `ttk.Combobox` listing all profile names + `"Default"` (built-in)
 - **Save**: overwrites current profile with current option values
 - **Save As...**: prompts for new name, copies current values
+- **Rename**: prompts for new name, renames profile file on disk; disabled for `"Default"`
 - **Delete**: removes profile file (disabled for `"Default"`)
 
 ### 7.3 Storage Format
@@ -403,31 +419,73 @@ Profiles provide named presets of all configuration option values, persisted acr
 
 | Operation | Behavior |
 |-----------|----------|
-| **Load** (dropdown selection) | All widget values are set from the profile's `options` dict; command preview refreshes |
-| **Save** | Current widget values are serialized to the selected profile's file |
-| **Save As** | Dialog prompts for name; new file created; dropdown selects it |
-| **Delete** | File removed from disk; dropdown selects `"Default"` |
+| **Load** (dropdown selection) | Prompts to save unsaved changes first (Yes/No/Cancel). All widget values are set from the profile's `options` dict; command preview refreshes; `_dirty` cleared |
+| **Save** | Current widget values are serialized to the selected profile's file; `_dirty` cleared |
+| **Save As** | Dialog prompts for name; new file created; dropdown selects it; `_dirty` cleared |
+| **Rename** | `simpledialog.askstring` prompts for new name; `ProfileManager.rename()` does atomic rename (write new, remove old); dropdown + `_current_profile` updated |
+| **Delete** | File removed from disk; switches to `"Default"` via `_do_switch_profile()`; `_dirty` cleared |
 | **Auto-restore** | Last active profile name saved in `preferences.json`; restored on launch |
+| **Close window** | `on_close_request()` checks `_dirty`; if set, shows Yes/No/Cancel unsaved-changes dialog before allowing close |
+
+#### Dirty Tracking
+
+- `_dirty: bool` — set `True` whenever any widget `StringVar` fires its `trace_add('write')` callback via `_refresh()`.
+- `_ready: bool` — initialized `False`; set `True` after `_build_ui()` completes. `_refresh()` only sets `_dirty = True` when `_ready` is `True`, preventing startup construction from marking the session dirty.
+- `_load_preferences()` also calls `_apply_options()` after `_build_ui()`, so it explicitly sets `config_tab._dirty = False` after loading.
 
 ### 7.5 llama-server Binary Path
 
-A dedicated row below the profile toolbar lets users set a custom path to the `llama-server` executable (default: `llama-server`, resolved from `$PATH`).
+Configured in the **Settings dialog** (toolbar button, see section 9). No longer a per-profile Config tab row.
 
-- **Widget**: `ttk.Entry` + Browse button (file dialog, shows `*.exe` on Windows)
-- **Storage**: Saved in the profile's `options` dict under the special key `_server_bin`
-- **Usage**: When starting, `main.py` substitutes the binary path into the built command by replacing the `llama-server` prefix
-- **Scope**: Per-profile — each profile can reference a different binary (e.g. debug vs release builds)
+- **Widget**: `ttk.Entry` + `"..."` Browse button (file dialog) inside a `Toplevel` modal
+- **Storage**: Saved in `preferences.json` under key `server_bin`
+- **Usage**: When starting, `main.py` prefixes the built command with the configured binary path
+- **Scope**: Global — one setting shared across all profiles
 
 ### 7.6 Implementation
 
-- `profile_mgr.py` — `ProfileManager` class: `list_profiles()`, `load(name)`, `save(name, options)`, `delete(name)`, `default_options()`
-- `config_tab.py` — profile toolbar with Combobox + buttons, server binary path row, wired to `_collect_options()` / `_apply_options()`
-- `main.py` — `save_preferences()` extended to include `last_profile`; `_load_preferences()` restores it; binary substitution in `_start_server()`
-- `widget_factory.py` — add `set_value(value)` method to `OptionWidget` for profile loading
+- `profile_mgr.py` — `ProfileManager` class: `list_profiles()`, `load(name)`, `save(name, options)`, `delete(name)`, `rename(old, new)` (atomic: write new, remove old)
+- `config_tab.py` — profile toolbar with Combobox + Save/Save As.../Rename/Delete buttons; `_dirty`/`_ready` guard; `on_close_request()`; `_do_switch_profile()` centralises load + dirty-clear + button-state update; `_prompt_unsaved()` → `messagebox.askyesnocancel`
+- `main.py` — `_show_settings()` modal; `save_preferences()` includes `server_bin` + `health_timeout`; `_load_preferences()` restores both and clears `_dirty`
+- `widget_factory.py` — `set_value(value)` on `OptionWidget` for profile loading; `_OrderedListSelector` for `ordered_list_of_options`
 
 ---
 
-## 8. Implementation Status
+## 9. Settings Dialog
+
+Opened via a **Settings** button in the main toolbar (right of the browser button, separated by a vertical separator).
+
+```
++-------------------------------------+
+| Settings                            |
++-------------------------------------+
+| Server binary: [llama-server  ] [...] |
+| Startup timeout (s): [120   ↕ ]     |
++-------------------------------------+
+|        [  OK  ]  [ Cancel ]         |
++-------------------------------------+
+```
+
+- **Server binary**: `ttk.Entry` (width 42) + `"..."` Browse button. Pre-filled from `config_tab._server_bin_var`. On OK, writes back to `_server_bin_var`.
+- **Startup timeout**: `ttk.Spinbox` (10–600, step 10). Controls `self._health_check_timeout` in `main.py`.
+- **OK**: applies values, calls `save_preferences()`, destroys dialog.
+- **Cancel**: destroys dialog without changes.
+- Modal: `dlg.transient(root)` + `dlg.grab_set()`.
+
+Storage in `preferences.json`:
+
+```json
+{
+  "server_bin": "llama-server",
+  "health_timeout": 120,
+  "refresh_ms": 2000,
+  "last_profile": "my-preset"
+}
+```
+
+---
+
+## 10. Implementation Status
 
 - [x] **Phase 1**: Core process management + config tab with full CLI options
 - [x] **Phase 2**: Monitor tab with HTTP polling + system monitoring + log parsing
@@ -437,4 +495,8 @@ A dedicated row below the profile toolbar lets users set a custom path to the `l
 - [x] **Phase 4c**: Process robustness — error handling, health check, crash detection
 - [x] **Phase 4d**: Monitoring completeness — `/metrics` polling, log filter fix
 - [x] **Phase 4e**: Cleanup — remove dead code (`section_builder.py`, unused functions)
-- [ ] **Phase 5**: Polish - charts, export, presets, keyboard shortcuts
+- [x] **Phase 4f**: Speculative section revamp — `ordered_list_of_options` for spec_type, per-type sub-panels, all ngram/draft flags wired in registry + command builder
+- [x] **Phase 4g**: Profile improvements — Rename button, dirty tracking with unsaved-changes prompt on switch and close, delete fix
+- [x] **Phase 4h**: Settings dialog — server binary + health timeout moved out of config tab into toolbar modal; server_bin + health_timeout persisted in preferences.json
+- [x] **Phase 4i**: Bug fixes — KV cache types corrected to ggml type names (`f16/f32/bf16/q8_0/…`), flash_attn changed to dropdown, fit_target changed to text, log line timestamps captured at receipt time, `~` expansion in subprocess args, dirty false-positive on startup fixed
+- [ ] **Phase 5**: Polish — charts, export, presets, keyboard shortcuts
