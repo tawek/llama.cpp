@@ -8,6 +8,7 @@ from tkinter import ttk, messagebox
 import sys
 import os
 import queue
+from pathlib import Path
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -20,6 +21,53 @@ from process_mgr import ServerProcess
 from system_monitor import SystemMonitor
 
 
+def _detect_system_theme() -> str:
+    """Return 'dark' or 'light' by querying the OS colour-scheme preference.
+
+    Supports Windows (registry), macOS (defaults), and Linux/freedesktop
+    (gsettings org.gnome.desktop.interface color-scheme, with a fallback to
+    the XDG_CURRENT_DESKTOP / GTK_THEME environment variables).
+    Returns 'dark' when the preference cannot be determined.
+    """
+    import platform
+    import subprocess
+
+    system = platform.system()
+    try:
+        if system == 'Windows':
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize')
+            val, _ = winreg.QueryValueEx(key, 'AppsUseLightTheme')
+            return 'light' if val == 1 else 'dark'
+
+        elif system == 'Darwin':
+            result = subprocess.run(
+                ['defaults', 'read', '-g', 'AppleInterfaceStyle'],
+                capture_output=True, text=True, timeout=2)
+            return 'dark' if 'dark' in result.stdout.lower() else 'light'
+
+        else:  # Linux / BSD / other freedesktop systems
+            # Try gsettings (GNOME / KDE with gnome-settings-daemon)
+            result = subprocess.run(
+                ['gsettings', 'get',
+                 'org.gnome.desktop.interface', 'color-scheme'],
+                capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                return 'dark' if 'dark' in result.stdout.lower() else 'light'
+
+            # Fallback: GTK_THEME env var set by the session
+            gtk_theme = os.environ.get('GTK_THEME', '').lower()
+            if gtk_theme:
+                return 'dark' if 'dark' in gtk_theme else 'light'
+
+    except Exception:
+        pass
+
+    return 'dark'
+
+
 class MainWindow:
     """Main application window."""
 
@@ -27,6 +75,8 @@ class MainWindow:
         self.root = tk.Tk()
         self.root.title('llama.cpp GUI Launcher')
         self.root.geometry('1100x700')
+        self._set_icon()
+        self._theme_mode = 'dark'  # default; overridden by saved preferences
         self._configure_fonts()
 
         # Shared components
@@ -59,24 +109,38 @@ class MainWindow:
         # Load saved preferences
         self._load_preferences()
 
+    def _set_icon(self):
+        """Set the window icon from the bundled base64 PNG."""
+        try:
+            import base64
+            from icon import ICON_B64
+            data = base64.b64decode(ICON_B64)
+            img = tk.PhotoImage(data=data)
+            self.root.iconphoto(True, img)
+            self._icon_img = img   # keep reference — GC would blank the icon
+        except Exception:
+            pass   # icon is cosmetic; never crash over it
+
     def _configure_fonts(self):
         import tkinter.font as tkfont
         import platform
 
-        # ── ttk theme ────────────────────────────────────────────────────────
-        # On Linux/X11 the built-in 'default' theme uses pixel-drawn 3-D
-        # borders that look very dated.  'clam' is the only built-in theme
-        # that renders cleanly with antialiased TrueType fonts on modern DEs.
-        style = ttk.Style(self.root)
-        if platform.system() == 'Linux':
-            style.theme_use('default')
+        # ── Azure ttk theme ───────────────────────────────────────────────────
+        # Bundled under theme/azure/azure.tcl.  Must be sourced before any
+        # widgets are created.  Use root.tk.call("set_theme", ...) to switch
+        # modes — do NOT use ttk.Style.theme_use() directly after this point
+        # or the palette will be incorrect on subsequent switches.
+        _tcl = Path(__file__).parent / 'theme' / 'azure' / 'azure.tcl'
+        try:
+            self.root.tk.call('source', str(_tcl))
+            self.root.tk.call('set_theme', self._theme_mode)
+        except Exception as exc:
+            # Fallback to clam if the TCL file is missing
+            import warnings
+            warnings.warn(f'Azure theme not loaded: {exc}')
+            ttk.Style(self.root).theme_use('clam')
 
         # ── Xft hints (X11 only) ─────────────────────────────────────────────
-        # Tk reads Xft settings from the X resource database.  KDE typically
-        # writes hintfull + rgba=none which forces aggressive pixel hinting and
-        # disables sub-pixel rendering; at small sizes this can look aliased.
-        # Overriding to hintslight here gives smoother rendering for Tk text
-        # while leaving the rest of the desktop untouched.
         if platform.system() == 'Linux':
             try:
                 self.root.option_add('*Xft.hintstyle', 'hintslight')
@@ -84,14 +148,7 @@ class MainWindow:
             except Exception:
                 pass
 
-        # ── TkDefaultFont / TkTextFont ───────────────────────────────────────
-        # Leave untouched so the desktop environment's font (Cantarell,
-        # Noto Sans, Segoe UI, …) is picked up automatically.
-
         # ── TkFixedFont ───────────────────────────────────────────────────────
-        # Pick the best available monospace family.  Used for logs, graph
-        # labels, command preview, and any widget that explicitly requests a
-        # fixed-width font.
         fixed = tkfont.nametofont('TkFixedFont')
         available = set(tkfont.families())
         for candidate in ('JetBrains Mono', 'Fira Code', 'Cascadia Code',
@@ -100,6 +157,25 @@ class MainWindow:
             if candidate in available:
                 fixed.configure(family=candidate, size=9)
                 break
+
+    def set_theme(self, mode: str):
+        """Switch between 'dark', 'light', or 'system' Azure theme.
+
+        'system' resolves the OS colour-scheme preference at call time and
+        stores the *preference* as 'system' (so it re-resolves on next launch)
+        while applying the resolved variant immediately.
+        """
+        if mode not in ('dark', 'light', 'system'):
+            return
+        self._theme_mode = mode
+        resolved = _detect_system_theme() if mode == 'system' else mode
+        try:
+            self.root.tk.call('set_theme', resolved)
+        except Exception:
+            pass
+        # Propagate to canvas-based widgets that manage their own colors
+        if hasattr(self, 'monitor_tab'):
+            self.monitor_tab.set_theme(resolved)
 
     def _build_ui(self):
         # Top toolbar
@@ -405,12 +481,29 @@ class MainWindow:
                      textvariable=window_var, width=8).grid(
             row=5, column=1, sticky='w', **pad)
 
+        # Theme — live preview: changing the selection immediately re-renders
+        # the whole GUI.  Cancel reverts to the mode active when the dialog
+        # was opened.
+        _prev_theme = self._theme_mode
+        ttk.Label(dlg, text='Theme:').grid(
+            row=6, column=0, sticky='w', **pad)
+        theme_var = tk.StringVar(value=self._theme_mode)
+        theme_combo = ttk.Combobox(dlg, textvariable=theme_var,
+                                   values=['dark', 'light', 'system'],
+                                   state='readonly', width=10)
+        theme_combo.grid(row=6, column=1, sticky='w', **pad)
+
+        def _preview_theme(event=None):
+            self.set_theme(theme_var.get())
+
+        theme_combo.bind('<<ComboboxSelected>>', _preview_theme)
+
         ttk.Separator(dlg, orient='horizontal').grid(
-            row=6, column=0, columnspan=3, sticky='ew', pady=6)
+            row=7, column=0, columnspan=3, sticky='ew', pady=6)
 
         # Buttons
         btn_frame = ttk.Frame(dlg)
-        btn_frame.grid(row=7, column=0, columnspan=3, pady=(0, 8))
+        btn_frame.grid(row=8, column=0, columnspan=3, pady=(0, 8))
 
         def _ok():
             self.config_tab._server_bin_var.set(bin_var.get())
@@ -436,14 +529,21 @@ class MainWindow:
                 self.monitor_tab._chart.set_time_window(new_win)
             except ValueError:
                 pass
+            # Theme already applied live; just persist the chosen value
+            self._theme_mode = theme_var.get()
             self.save_preferences()
+            dlg.destroy()
+
+        def _cancel():
+            self.set_theme(_prev_theme)
             dlg.destroy()
 
         ttk.Button(btn_frame, text='OK', command=_ok, width=10).pack(
             side='left', padx=4)
-        ttk.Button(btn_frame, text='Cancel', command=dlg.destroy,
+        ttk.Button(btn_frame, text='Cancel', command=_cancel,
                     width=10).pack(side='left', padx=4)
 
+        dlg.protocol('WM_DELETE_WINDOW', _cancel)
         dlg.columnconfigure(1, weight=1)
         dlg.wait_window()
 
@@ -495,6 +595,8 @@ class MainWindow:
                     self.monitor_tab._chart.set_time_window(w)
                 if 'health_timeout' in prefs:
                     self._health_check_timeout = int(prefs['health_timeout'])
+                if 'theme_mode' in prefs:
+                    self.set_theme(prefs['theme_mode'])
                 server_bin = prefs.get('server_bin', '')
                 if server_bin and hasattr(self.config_tab, '_server_bin_var'):
                     self.config_tab._server_bin_var.set(server_bin)
@@ -525,6 +627,7 @@ class MainWindow:
                 'health_timeout': self._health_check_timeout,
                 'server_bin': self.config_tab._server_bin_var.get(),
                 'last_profile': getattr(self.config_tab, '_current_profile', ''),
+                'theme_mode': self._theme_mode,
             }
             with open(pref_path, 'w') as f:
                 json.dump(prefs, f)

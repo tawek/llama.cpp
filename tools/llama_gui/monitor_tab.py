@@ -23,14 +23,32 @@ class MetricsChart(ttk.Frame):
     MARGIN_B   = 28
     GAP        = 18           # vertical gap between charts
 
-    C_BG       = '#1e1e1e'
-    C_PLOT_BG  = '#252525'
-    C_GRID     = '#3a3a3a'
-    C_AXIS     = '#666666'
-    C_PROMPT   = '#4e9eff'
-    C_GEN      = '#4ec94e'
-    C_DRAFT    = '#ffaa44'
-    C_TEXT     = '#aaaaaa'
+    C_BG         = '#1e1e1e'
+    C_PLOT_BG    = '#252525'
+    C_GRID       = '#3a3a3a'
+    C_AXIS       = '#666666'
+    C_PROMPT     = '#4e9eff'
+    C_GEN        = '#4ec94e'
+    C_DRAFT      = '#ffaa44'
+    C_TEXT       = '#aaaaaa'
+    C_RULE       = '#ffffff'   # vertical crosshair line
+    C_HOVER_TEXT = '#ffffff'   # value label foreground
+    C_HOVER_SHADOW = '#000000' # value label drop-shadow
+
+    _PALETTE = {
+        'dark': {
+            'C_BG': '#1e1e1e', 'C_PLOT_BG': '#252525',
+            'C_GRID': '#3a3a3a', 'C_AXIS': '#666666', 'C_TEXT': '#aaaaaa',
+            'C_RULE': '#ffffff',
+            'C_HOVER_TEXT': '#ffffff', 'C_HOVER_SHADOW': '#000000',
+        },
+        'light': {
+            'C_BG': '#f0f0f0', 'C_PLOT_BG': '#ffffff',
+            'C_GRID': '#cccccc', 'C_AXIS': '#999999', 'C_TEXT': '#444444',
+            'C_RULE': '#888888',
+            'C_HOVER_TEXT': '#000000', 'C_HOVER_SHADOW': '#cccccc',
+        },
+    }
 
     def __init__(self, parent, time_window_s: int = 120):
         super().__init__(parent)
@@ -71,6 +89,14 @@ class MetricsChart(ttk.Frame):
             self._gen    = self._gen[-new_max:]
             self._draft  = self._draft[-new_max:]
         self._max_points = new_max
+        self._redraw()
+
+    def set_theme(self, mode: str):
+        """Switch canvas color palette to 'dark' or 'light' and redraw."""
+        palette = self._PALETTE.get(mode, self._PALETTE['dark'])
+        for attr, value in palette.items():
+            setattr(self, attr, value)
+        self._canvas.config(bg=self.C_BG)
         self._redraw()
 
     # ── drawing ──────────────────────────────────────────────────────────────
@@ -245,7 +271,7 @@ class MetricsChart(ttk.Frame):
         top  = g['g1'][1]
         bot  = g['g3'][3]
         c.create_line(mx, top, mx, bot,
-                      fill='#ffffff', width=1, dash=(3, 3), tags='hover')
+                      fill=self.C_RULE, width=1, dash=(3, 3), tags='hover')
 
         # Per-panel: dot at intersection + value label
         panels = [
@@ -269,11 +295,11 @@ class MetricsChart(ttk.Frame):
             lx     = mx + 6 if mx + 52 < x1 else mx - 6
             anchor = 'w'     if lx > mx      else 'e'
             ty     = cy - 14
-            # Black shadow (+1, +1) then white foreground
-            c.create_text(lx + 1, ty + 1, text=label, fill='#000000', anchor=anchor,
-                          font=('Consolas', 8, 'bold'), tags='hover')
-            c.create_text(lx,     ty,     text=label, fill='#ffffff', anchor=anchor,
-                          font=('Consolas', 8, 'bold'), tags='hover')
+            # Shadow offset (+1, +1) then foreground — colors flip in light mode
+            c.create_text(lx + 1, ty + 1, text=label, fill=self.C_HOVER_SHADOW,
+                          anchor=anchor, font=('Consolas', 8, 'bold'), tags='hover')
+            c.create_text(lx,     ty,     text=label, fill=self.C_HOVER_TEXT,
+                          anchor=anchor, font=('Consolas', 8, 'bold'), tags='hover')
 
     def _draw_grid(self, c, x0, y0, x1, y1, ml, max_val, n, fmt):
         """Draw horizontal grid lines and Y-axis labels for one graph."""
@@ -340,13 +366,17 @@ class MonitorTab(ttk.Frame):
         self._sys_monitor = sys_monitor
         self._process_mgr = process_mgr
 
+    def set_theme(self, mode: str):
+        """Propagate theme change to the embedded canvas chart."""
+        self._chart.set_theme(mode)
+
     def _build_ui(self):
         # ── Vertical paned window: info row (top) + chart (bottom, draggable) ──
         self._paned = ttk.PanedWindow(self, orient='vertical')
         self._paned.pack(fill='both', expand=True, padx=4, pady=4)
 
         top = ttk.Frame(self._paned)
-        self._paned.add(top, weight=0)
+        self._paned.add(top, weight=1)
 
         # ── Server Metrics ────────────────────────────────────────────────────
         sm_frame = ttk.LabelFrame(top, text='Server Metrics', padding=(8, 4))
@@ -442,17 +472,27 @@ class MonitorTab(ttk.Frame):
         self._chart = MetricsChart(chart_frame, time_window_s=self._graph_time_window_s)
         self._chart.pack(fill='both', expand=True)
 
-        # Set initial sash position after the window is mapped
-        self.after(100, self._set_initial_sash)
+        # Set the initial sash at 50 % on the first real <Configure> event
+        # (i.e. when the tab is first shown and has actual pixel dimensions).
+        # after(100) is unreliable here because the Monitor tab is not the
+        # default tab, so winfo_height() returns 1 until the tab is selected.
+        self._sash_set = False
+
+        def _on_pane_configure(event):
+            if self._sash_set:
+                return
+            h = self._paned.winfo_height()
+            if h < 10:
+                return
+            try:
+                self._paned.sashpos(0, h // 2)
+                self._sash_set = True
+            except Exception:
+                pass
+
+        self._paned.bind('<Configure>', _on_pane_configure)
 
     # ── Monitoring control ────────────────────────────────────────────────────
-
-    def _set_initial_sash(self):
-        """Set sash so info row gets its natural height and chart fills the rest."""
-        try:
-            self._paned.sashpos(0, self._paned.winfo_height() // 3)
-        except Exception:
-            pass
 
     def _start_monitoring(self):
         self._poll_once()

@@ -6,6 +6,26 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 
 
+class _ScrollFreeCombobox(ttk.Combobox):
+    """ttk.Combobox that never cycles its value on mouse-wheel events.
+
+    The default Combobox class binding lets the mouse wheel scroll through
+    values, which is disruptive when the widget sits inside a scrollable
+    canvas (Config tab).  The popup listbox captures wheel events itself
+    when it is open, so it is always safe to block the wheel on the
+    Combobox widget itself.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            self.bind(seq, self._block_scroll, add=True)
+
+    @staticmethod
+    def _block_scroll(event):
+        return 'break'
+
+
 # Per-option file type filter presets
 # None = directory dialog, empty list = all files only
 _FILE_FILTERS = {
@@ -188,14 +208,14 @@ class OptionWidget:
             self.widget._on_select = lambda p: None
 
         elif self.widget_type == 'dropdown':
-            self.widget = ttk.Combobox(self.parent, values=self.choices or [],
-                                       state='readonly', width=28)
+            self.widget = _ScrollFreeCombobox(self.parent, values=self.choices or [],
+                                              state='readonly', width=28)
 
         elif self.widget_type == 'checkbox':
             self._var = tk.StringVar(value='')
-            self.widget = ttk.Combobox(self.parent,
-                                       values=['', 'on', 'off'],
-                                       state='readonly', width=10)
+            self.widget = _ScrollFreeCombobox(self.parent,
+                                              values=['', 'on', 'off'],
+                                              state='readonly', width=10)
 
         elif self.widget_type == 'radio':
             self._var = tk.StringVar(value='')

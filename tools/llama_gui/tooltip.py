@@ -16,12 +16,20 @@ class Tooltip:
             return
         x = self._widget.winfo_rootx() + 18
         y = self._widget.winfo_rooty() + 22
+        # Pick colors to match the active Azure theme variant
+        try:
+            theme = str(self._widget.tk.call('ttk::style', 'theme', 'use'))
+            dark = 'dark' in theme
+        except Exception:
+            dark = False
+        bg = '#2d2d2d' if dark else '#ffffea'
+        fg = '#e0e0e0' if dark else '#333333'
         self._window = tk.Toplevel(self._widget)
         self._window.wm_overrideredirect(True)
         self._window.wm_geometry(f'+{x}+{y}')
         self._window.attributes('-topmost', True)
         label = tk.Label(self._window, text=self._text, justify='left',
-                         background='#ffffea', foreground='#333',
+                         background=bg, foreground=fg,
                          relief='solid', borderwidth=1,
                          wraplength=420,
                          padx=8, pady=6)
