@@ -147,33 +147,33 @@ class MonitorTab(ttk.Frame):
             return
 
         slots_data = self._server_api.slots()
-        if slots_data:
-            lines = []
-            idle = slots_data.get('n_idle_slots', 0)
-            processing = slots_data.get('n_processing_slots', 0)
-            lines.append(f'Idle: {idle} | Processing: {processing}')
-            lines.append('-' * 40)
-
-            for slot in slots_data.get('slots', []):
-                sid = slot.get('id', '?')
-                is_proc = slot.get('is_processing', False)
-                ctx = slot.get('n_past', 0)
-                n_ctx = slot.get('n_ctx', 0)
-                if n_ctx > 0:
-                    pct = ctx / n_ctx * 100
-                else:
-                    pct = 0
-                bar_len = 20
-                filled = int(bar_len * pct / 100)
-                bar = '#' * filled + '-' * (bar_len - filled)
-
-                tps = slot.get('predicted_per_second', 0)
-                state = 'PROC' if is_proc else 'IDLE'
-                lines.append(f'  Slot {sid} [{state}] |{bar}| {ctx}/{n_ctx}')
-
-            self._update_text(self._slots_text, '\n'.join(lines))
-        else:
+        if slots_data is None:
             self._update_text(self._slots_text, 'No slot data available')
+            return
+
+        # /slots returns a bare JSON array
+        if isinstance(slots_data, list):
+            slots = slots_data
+        else:
+            slots = slots_data.get('slots', [])
+
+        idle       = sum(1 for s in slots if not s.get('is_processing', False))
+        processing = sum(1 for s in slots if s.get('is_processing', False))
+
+        lines = [f'Idle: {idle} | Processing: {processing}', '-' * 40]
+
+        for slot in slots:
+            sid    = slot.get('id', '?')
+            is_proc = slot.get('is_processing', False)
+            ctx    = slot.get('n_past', 0)
+            n_ctx  = slot.get('n_ctx', 0)
+            pct    = ctx / n_ctx * 100 if n_ctx > 0 else 0
+            filled = int(20 * pct / 100)
+            bar    = '#' * filled + '-' * (20 - filled)
+            state  = 'PROC' if is_proc else 'IDLE'
+            lines.append(f'  Slot {sid} [{state}] |{bar}| {ctx}/{n_ctx}')
+
+        self._update_text(self._slots_text, '\n'.join(lines))
 
     def _fetch_system_stats(self):
         if not self._sys_monitor:
