@@ -130,14 +130,17 @@ class MonitorTab(ttk.Frame):
         else:
             self._lbl_status.config(text='Status: Disconnected', foreground='gray')
 
-        # Try to get metrics from /props or /metrics
-        if self._server_api:
-            props = self._server_api.props()
-
-        # Parse from process output if available
-        if self._process_mgr:
-            # Metrics would be updated via log_parser callbacks
-            pass
+        # Fetch Prometheus metrics from /metrics
+        raw = self._server_api.metrics() if self._server_api else None
+        if raw:
+            from api_client import parse_prometheus_metrics
+            parsed = parse_prometheus_metrics(raw)
+            if parsed.get('prompt_tokens_seconds', 0) > 0:
+                self._lbl_prompt_tps.config(
+                    text=f'Prompt: {parsed["prompt_tokens_seconds"]:.1f} tok/s')
+            if parsed.get('predicted_tokens_seconds', 0) > 0:
+                self._lbl_gen_tps.config(
+                    text=f'Gen: {parsed["predicted_tokens_seconds"]:.1f} tok/s')
 
     def _fetch_slots(self):
         if not self._server_api:

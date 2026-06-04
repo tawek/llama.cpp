@@ -96,7 +96,9 @@ class LogsTab(ttk.Frame):
     def _detect_level(self, line):
         """Detect log level from line content."""
         upper = line.upper()
-        if any(w in upper for w in ['ERROR', 'FAIL', 'WARN']):
+        if 'ERROR' in upper or 'FAIL' in upper:
+            return 'error'
+        if 'WARN' in upper:
             return 'warn'
         if 'INFO' in upper:
             return 'info'

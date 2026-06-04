@@ -346,7 +346,55 @@ PROMPT_CACHE_RE = re.compile(r'prompt cache state:\s+(\d+)\s+prompts,\s+([\d.]+)
 
 ## 7. Profile Management
 
-**Not yet implemented.** The only persistence mechanism is `~/.llama-gui/preferences.json` (monitor tab refresh interval). No profile save/load UI exists in the config tab.
+### 7.1 Overview
+
+Profiles provide named presets of all configuration option values, persisted across sessions. A toolbar/combobox at the top of the Config tab allows creating, loading, saving, and deleting profiles.
+
+### 7.2 Profile Toolbar
+
+```
+[ Profile: [Default  v] ] [Save] [Save As...] [Delete]
+```
+
+- **Profile dropdown**: `ttk.Combobox` listing all profile names + `"Default"` (built-in)
+- **Save**: overwrites current profile with current option values
+- **Save As...**: prompts for new name, copies current values
+- **Delete**: removes profile file (disabled for `"Default"`)
+
+### 7.3 Storage Format
+
+- **Directory**: `~/.llama-gui/profiles/`
+- **Extension**: `.json`
+- **Schema**:
+  ```json
+  {
+    "name": "my-preset",
+    "options": {
+      "model": "/path/to/model.gguf",
+      "temperature": 0.7,
+      "mlock": "on",
+      ...
+    }
+  }
+  ```
+- Option keys use the internal underscore names (e.g. `gpu_layers`), values match the widget's internal representation (`''`, `'on'`, `'off'` for checkboxes, empty string for unset numerics, etc.)
+
+### 7.4 Behaviors
+
+| Operation | Behavior |
+|-----------|----------|
+| **Load** (dropdown selection) | All widget values are set from the profile's `options` dict; command preview refreshes |
+| **Save** | Current widget values are serialized to the selected profile's file |
+| **Save As** | Dialog prompts for name; new file created; dropdown selects it |
+| **Delete** | File removed from disk; dropdown selects `"Default"` |
+| **Auto-restore** | Last active profile name saved in `preferences.json`; restored on launch |
+
+### 7.5 Implementation
+
+- `profile_mgr.py` — `ProfileManager` class: `list_profiles()`, `load(name)`, `save(name, options)`, `delete(name)`, `default_options()`
+- `config_tab.py` — profile toolbar with Combobox + buttons, wired to `ConfigTab._load_profile()` / `_save_profile()`
+- `main.py` — `save_preferences()` extended to include `last_profile`; `_load_preferences()` restores it
+- `widget_factory.py` — add `set_value(value)` method to `OptionWidget` for profile loading
 
 ---
 
@@ -355,5 +403,9 @@ PROMPT_CACHE_RE = re.compile(r'prompt cache state:\s+(\d+)\s+prompts,\s+([\d.]+)
 - [x] **Phase 1**: Core process management + config tab with full CLI options
 - [x] **Phase 2**: Monitor tab with HTTP polling + system monitoring + log parsing
 - [x] **Phase 3**: Logs tab with filtering + StatsAggregation
-- [x] **Phase 4**: Slots tab + Advanced options (Profile management not yet implemented)
+- [x] **Phase 4**: Slots tab + Advanced options
+- [x] **Phase 4b**: Profiles — save/load/copy/delete config presets (section 7)
+- [x] **Phase 4c**: Process robustness — error handling, health check, crash detection
+- [x] **Phase 4d**: Monitoring completeness — `/metrics` polling, log filter fix
+- [x] **Phase 4e**: Cleanup — remove dead code (`section_builder.py`, unused functions)
 - [ ] **Phase 5**: Polish - charts, export, presets, keyboard shortcuts

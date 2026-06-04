@@ -36,12 +36,14 @@ class MainWindow:
         # State
         self._command = ''
         self._monitoring = False
+        self._health_check_id = None
 
         # Setup UI
         self._build_ui()
 
-        # Connect log callback
+        # Connect callbacks
         self.process.on_stdout(self._on_log_line)
+        self.process.on_stopped(self._on_process_stopped)
 
         # Load saved preferences
         self._load_preferences()
@@ -123,6 +125,19 @@ class MainWindow:
         """Set the server command from config tab."""
         self._command = command
 
+    def _set_buttons_started(self):
+        self._btn_start.config(state='disabled')
+        self._btn_stop.config(state='normal')
+        self._btn_restart.config(state='normal')
+
+    def _set_buttons_stopped(self):
+        self._btn_start.config(state='normal')
+        self._btn_stop.config(state='disabled')
+        self._btn_restart.config(state='disabled')
+        self._btn_open_browser.config(state='disabled')
+        self._lbl_server_status.config(text='Server: Not started',
+                                        foreground='gray')
+
     def _start_server(self):
         """Start the llama-server process."""
         if not self._command:
@@ -134,42 +149,99 @@ class MainWindow:
             return
 
         self._status_label.config(text='Starting server...')
-        success = self.process.start(self._command)
+        self._lbl_server_status.config(text='Server: Starting...', foreground='orange')
 
-        if success:
-            self._btn_start.config(state='disabled')
-            self._btn_stop.config(state='normal')
-            self._btn_restart.config(state='normal')
-            self._monitoring = True
-            self.monitor_tab._start_monitoring()
-            self._status_label.config(text='Server starting...')
-        else:
-            messagebox.showerror('Error', 'Failed to start server.')
+        try:
+            success = self.process.start(self._command)
+        except Exception:
+            success = False
+
+        if not success:
+            self._status_label.config(text='Failed to start server')
+            self._lbl_server_status.config(text='Server: Failed', foreground='red')
+            messagebox.showerror('Error', 'Failed to start server.\n'
+                                 'Make sure llama-server is on PATH.')
+            return
+
+        self._set_buttons_started()
+        self._status_label.config(text='Connecting...')
+        self._monitoring = True
+        self.monitor_tab._start_monitoring()
+
+        # Schedule health check after server starts
+        self._health_check_attempts = 0
+        self._poll_health()
+
+    def _poll_health(self):
+        """Poll health endpoint until server is ready or timeout."""
+        if not self.process.is_running:
+            self._on_server_health_failed()
+            return
+
+        try:
+            health = self.api.health()
+            if health and health.get('status') == 'ok':
+                self._on_server_health_ok(health)
+                return
+        except Exception:
+            pass
+
+        self._health_check_attempts += 1
+        if self._health_check_attempts >= 15:
+            self._on_server_health_failed()
+            return
+
+        self._health_check_id = self.root.after(1000, self._poll_health)
+
+    def _on_server_health_ok(self, health):
+        self._lbl_server_status.config(text='Server: Connected', foreground='green')
+        self._btn_open_browser.config(state='normal')
+        self._status_label.config(text='Server running')
+
+    def _on_server_health_failed(self):
+        if self.process.is_running:
+            self.process.stop()
+        self._set_buttons_stopped()
+        self._status_label.config(text='Server failed to start or connect')
+        self._lbl_server_status.config(text='Server: Failed', foreground='red')
+        messagebox.showerror('Server Error',
+                              'Server did not become healthy within 15 seconds.\n'
+                              'Check the Logs tab for details.')
+
+    def _on_process_stopped(self):
+        """Called when the server process exits unexpectedly."""
+        self.root.after(0, self._handle_process_stopped)
+
+    def _handle_process_stopped(self):
+        if self._monitoring:
+            self._monitoring = False
+            self.monitor_tab._stop_monitoring()
+        self._set_buttons_stopped()
+        self._status_label.config(text='Server stopped unexpectedly')
+        self._lbl_server_status.config(text='Server: Crashed', foreground='red')
 
     def _stop_server(self):
         """Stop the llama-server process."""
+        if self._health_check_id:
+            self.root.after_cancel(self._health_check_id)
+            self._health_check_id = None
+
         self.process.stop()
         self._monitoring = False
         self.monitor_tab._stop_monitoring()
-
-        self._btn_start.config(state='normal')
-        self._btn_stop.config(state='disabled')
-        self._btn_restart.config(state='disabled')
-        self._btn_open_browser.config(state='disabled')
-        self._lbl_server_status.config(text='Server: Not started',
-                                        foreground='gray')
+        self._set_buttons_stopped()
         self._status_label.config(text='Server stopped')
 
     def _restart_server(self):
         """Restart the server with current command."""
         self._stop_server()
+        self._command = self.config_tab.get_command()
         self.root.after(500, self._start_server)
 
     def _open_browser(self):
         """Open server URL in default browser."""
         import webbrowser
-        url = self._lbl_server_status.cget('text').split(': ')[-1]
-        webbrowser.open(url)
+        webbrowser.open(self.api.base_url)
 
     def _on_log_line(self, line):
         """Handle incoming log line from server process."""
@@ -203,9 +275,17 @@ class MainWindow:
                 import json
                 with open(pref_path) as f:
                     prefs = json.load(f)
-                # Restore refresh interval if saved
                 if 'refresh_ms' in prefs:
                     self.monitor_tab._refresh_var.set(str(prefs['refresh_ms']))
+                last_profile = prefs.get('last_profile', '')
+                if last_profile and hasattr(self.config_tab, '_current_profile'):
+                    self.config_tab._current_profile = last_profile
+                    self.config_tab._refresh_profile_list()
+                    self.config_tab._profile_var.set(last_profile)
+                    if last_profile != 'Default':
+                        opts = self.config_tab._profile_mgr.load(last_profile)
+                        if opts:
+                            self.config_tab._apply_options(opts)
             except Exception:
                 pass
 
@@ -216,7 +296,8 @@ class MainWindow:
         try:
             import json
             prefs = {
-                'refresh_ms': self.monitor_tab._refresh_ms
+                'refresh_ms': self.monitor_tab._refresh_ms,
+                'last_profile': getattr(self.config_tab, '_current_profile', ''),
             }
             with open(pref_path, 'w') as f:
                 json.dump(prefs, f)

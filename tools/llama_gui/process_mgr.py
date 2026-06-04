@@ -42,15 +42,25 @@ class ServerProcess:
 
         cmd_parts = self._parse_command(command)
 
-        self._process = subprocess.Popen(
-            cmd_parts,
-            cwd=cwd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True,
-            bufsize=1
-        )
+        try:
+            self._process = subprocess.Popen(
+                cmd_parts,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1
+            )
+        except (FileNotFoundError, OSError) as e:
+            self._process = None
+            self._running = False
+            for cb in self._callbacks['stopped']:
+                try:
+                    cb()
+                except Exception:
+                    pass
+            return False
 
         self._running = True
         self._stdout_thread = threading.Thread(

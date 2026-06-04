@@ -95,3 +95,24 @@ class OptionWidget:
             raw = self._var.get().strip()
             return float(raw) if raw else None
         return self.default
+
+    def set_value(self, value):
+        if self.widget_type == 'file':
+            self.widget.path.set(str(value) if value is not None else '')
+        elif self.widget_type == 'checkbox':
+            self._var.set(str(value) if value is not None else '')
+        elif self.widget_type == 'radio':
+            self._var.set(str(value) if value is not None else '')
+        elif self.widget_type == 'dropdown':
+            vals = self.widget.cget('values')
+            if str(value) in vals:
+                self.widget.set(str(value))
+            elif vals:
+                self.widget.set('')
+        elif self.widget_type in ('text',):
+            self._var.set(str(value) if value is not None else '')
+        elif self.widget_type in ('spin', 'float_spin'):
+            if value is not None and value != '':
+                self._var.set(str(value))
+            else:
+                self._var.set('')

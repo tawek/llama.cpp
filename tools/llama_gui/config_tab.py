@@ -9,6 +9,7 @@ from config_registry import iter_options
 from widget_factory import OptionWidget
 from collapsible_pane import CollapsiblePane
 from command_builder import build_command, update_preview
+from profile_mgr import ProfileManager
 
 
 # Section definitions: (title, [keys_or_sub_panels])
@@ -85,6 +86,8 @@ class ConfigTab(ttk.Frame):
         super().__init__(parent)
         self._main_window = main_window
         self._option_map = {}
+        self._profile_mgr = ProfileManager()
+        self._current_profile = 'Default'
         self._build_ui()
 
     def _build_ui(self):
@@ -112,16 +115,18 @@ class ConfigTab(ttk.Frame):
         canvas.bind_all('<Button-4>', _b4)
         canvas.bind_all('<Button-5>', _b5)
 
+        self._build_profile_bar(scroll_frame)
         self._build_sections(scroll_frame)
         self._build_preview(scroll_frame)
         self._bind_updates()
+        self._refresh_profile_list()
 
     def _build_sections(self, parent):
         all_opts = dict(iter_options())
 
         for sec_idx, (section_title, keys) in enumerate(SECTIONS):
             pane = CollapsiblePane(parent, section_title, expanded=True)
-            pane.grid(row=sec_idx, column=0, sticky='ew', padx=6, pady=4)
+            pane.grid(row=sec_idx + 2, column=0, sticky='ew', padx=6, pady=4)
 
             inner_row = 0
             for item in keys:
@@ -163,7 +168,7 @@ class ConfigTab(ttk.Frame):
 
     def _build_preview(self, parent):
         pf = ttk.LabelFrame(parent, text='Command Preview')
-        pf.grid(row=len(SECTIONS) + 1, column=0, sticky='ew',
+        pf.grid(row=len(SECTIONS) + 2, column=0, sticky='ew',
                 padx=8, pady=(8, 8))
 
         self._cmd_preview = tk.Text(pf, height=4, wrap='word',
@@ -200,6 +205,102 @@ class ConfigTab(ttk.Frame):
         cmd = build_command(self._option_map)
         if self._main_window and hasattr(self._main_window, 'set_command'):
             self._main_window.set_command(cmd)
+
+    def _build_profile_bar(self, parent):
+        pf = ttk.Frame(parent)
+        pf.grid(row=0, column=0, sticky='ew', padx=8, pady=(4, 0))
+        parent.columnconfigure(0, weight=1)
+
+        ttk.Label(pf, text='Profile:').pack(side='left')
+        self._profile_var = tk.StringVar()
+        self._profile_combo = ttk.Combobox(pf, textvariable=self._profile_var,
+                                           state='readonly', width=24)
+        self._profile_combo.pack(side='left', padx=4)
+        self._profile_combo.bind('<<ComboboxSelected>>',
+                                 lambda e: self._on_profile_select())
+
+        ttk.Button(pf, text='Save', command=self._save_profile).pack(side='left', padx=1)
+        ttk.Button(pf, text='Save As...', command=self._save_as_profile).pack(side='left', padx=1)
+        self._btn_delete = ttk.Button(pf, text='Delete', command=self._delete_profile)
+        self._btn_delete.pack(side='left', padx=1)
+
+        ttk.Separator(parent, orient='horizontal').grid(row=1, column=0,
+                          sticky='ew', padx=8, pady=(6, 2))
+
+    def _refresh_profile_list(self):
+        names = self._profile_mgr.list_profiles()
+        all_names = ['Default'] + names
+        self._profile_combo.configure(values=all_names)
+        if self._current_profile in all_names:
+            self._profile_var.set(self._current_profile)
+        else:
+            self._profile_var.set('Default')
+            self._current_profile = 'Default'
+        self._btn_delete.configure(state='disabled' if self._current_profile == 'Default' else 'normal')
+
+    def _collect_options(self):
+        result = {}
+        for key, opt in self._option_map.items():
+            val = opt.get_value()
+            if val is not None and val != '':
+                result[key] = str(val)
+        return result
+
+    def _apply_options(self, options):
+        for key, val in options.items():
+            opt = self._option_map.get(key)
+            if opt:
+                opt.set_value(val)
+
+    def _on_profile_select(self):
+        name = self._profile_var.get()
+        self._current_profile = name
+        if name == 'Default':
+            self._apply_options({})
+        else:
+            opts = self._profile_mgr.load(name)
+            if opts:
+                self._apply_options(opts)
+        self._btn_delete.configure(state='disabled' if name == 'Default' else 'normal')
+        self._refresh()
+
+    def _save_profile(self):
+        if self._current_profile == 'Default':
+            self._save_as_profile()
+            return
+        opts = self._collect_options()
+        self._profile_mgr.save(self._current_profile, opts)
+
+    def _save_as_profile(self):
+        import tkinter.simpledialog as simpledialog
+        name = simpledialog.askstring('Save Profile', 'Profile name:',
+                                       parent=self._main_window or self)
+        if not name:
+            return
+        if not name.strip():
+            return
+        name = name.strip()
+        opts = self._collect_options()
+        self._profile_mgr.save(name, opts)
+        self._current_profile = name
+        self._refresh_profile_list()
+        self._profile_var.set(name)
+        self._refresh()
+
+    def _delete_profile(self):
+        if self._current_profile == 'Default':
+            return
+        from tkinter import messagebox
+        ok = messagebox.askyesno('Delete Profile',
+                                  f'Delete profile "{self._current_profile}"?',
+                                  parent=self._main_window or self)
+        if not ok:
+            return
+        self._profile_mgr.delete(self._current_profile)
+        self._current_profile = 'Default'
+        self._refresh_profile_list()
+        self._apply_options({})
+        self._refresh()
 
     def get_command(self):
         return build_command(self._option_map)
