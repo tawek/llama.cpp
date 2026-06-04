@@ -70,7 +70,7 @@ class _OrderedListSelector(ttk.Frame):
         left.pack(side='left', fill='both', expand=True)
         ttk.Label(left, text='Available:', font=('', 8)).pack(anchor='w')
         self._avail_list = tk.Listbox(left, height=6, width=16,
-                                       font=('Consolas', 8))
+                                       font=('', 9))
         self._avail_list.pack(fill='both', expand=True)
         for item in self._all_items:
             self._avail_list.insert('end', item)
@@ -88,7 +88,7 @@ class _OrderedListSelector(ttk.Frame):
         right.pack(side='left', fill='both', expand=True)
         ttk.Label(right, text='Selected (priority):', font=('', 8)).pack(anchor='w')
         self._sel_list = tk.Listbox(right, height=6, width=16,
-                                     font=('Consolas', 8))
+                                     font=('', 9))
         self._sel_list.pack(fill='both', expand=True)
 
         # Up/Down buttons below selected

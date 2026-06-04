@@ -23,7 +23,7 @@ class Tooltip:
         label = tk.Label(self._window, text=self._text, justify='left',
                          background='#ffffea', foreground='#333',
                          relief='solid', borderwidth=1,
-                         font=('sans-serif', 9), wraplength=420,
+                         wraplength=420,
                          padx=8, pady=6)
         label.pack()
 

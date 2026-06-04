@@ -60,6 +60,16 @@ class CollapsiblePane(ttk.LabelFrame):
         self._expanded = not self._expanded
         self._update()
 
+    def expand(self):
+        if not self._expanded:
+            self._expanded = True
+            self._update()
+
+    def collapse(self):
+        if self._expanded:
+            self._expanded = False
+            self._update()
+
     def _update(self):
         self._arrow.configure(text='▾' if self._expanded else '▸')
         if self._expanded:

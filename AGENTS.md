@@ -188,3 +188,25 @@ Chat template and parser:
 - [PEG parser](docs/development/parsing.md) - alternative to regex that llama.cpp uses to parse model's output
 - [Auto parser](docs/autoparser.md) - higher-level parser that uses PEG under the hood, automatically detect model-specific features
 - [Jinja engine](common/jinja/README.md)
+- [How to add a new model](docs/development/HOWTO-add-model.md)
+- [PR template](.github/pull_request_template.md)
+
+---
+
+## llama-gui Session Policy (tools/llama_gui)
+
+This section applies when working on the GUI launcher in `tools/llama_gui/`.
+
+### Task tracking
+
+- Every user comment or request — even casual ones during UI testing — is a todo item. Capture it immediately with TodoWrite.
+- Prioritize: bugs and crashes first, then broken UX, then new features, then polish.
+- Stay focused: finish the current highest-priority item before starting the next one. Do not jump between tasks.
+- Mark completed only after the fix is verified in code, not just intended.
+- Never lose a request. If the user mentions something in passing while reporting a bug, add it to the list.
+
+### Working style
+
+- One logical change per edit. Prefer surgical edits over full-file rewrites.
+- All HTTP polling and long-running work must happen off the main Tk thread or via `after()` loops. Never block the event loop.
+- When a fix requires restarting the app, say so explicitly.

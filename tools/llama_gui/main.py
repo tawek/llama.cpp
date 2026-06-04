@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
 import os
+import queue
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,16 +38,20 @@ class MainWindow:
         self._command = ''
         self._monitoring = False
         self._health_check_id = None
+        self._log_queue: queue.Queue = queue.Queue()   # thread → main-thread
 
         # Setup UI
         self._build_ui()
 
-        # Connect callbacks — use after(0) to marshal onto the main thread,
-        # since _read_stream runs in a background thread.
-        self.process.on_stdout(
-            lambda line: self.root.after(0, self._on_log_line, line))
+        # Connect callbacks — background thread puts into queue; main thread
+        # drains it every 50 ms.  Avoids thousands of after(0) events during
+        # server startup bursts.
+        self.process.on_stdout(self._log_queue.put)
         self.process.on_stopped(
             lambda: self.root.after(0, self._on_process_stopped))
+
+        # Start log drain loop
+        self._drain_log_queue()
 
         # Start background system monitor (needed for CPU delta calculation)
         self.sys_monitor.start(interval=2.0)
@@ -55,13 +60,46 @@ class MainWindow:
         self._load_preferences()
 
     def _configure_fonts(self):
-        import tkinter.font as font
-        f = font.nametofont('TkDefaultFont')
-        f.configure(family='Segoe UI', size=9)
-        f = font.nametofont('TkTextFont')
-        f.configure(family='Segoe UI', size=9)
-        f = font.nametofont('TkFixedFont')
-        f.configure(family='Consolas', size=9)
+        import tkinter.font as tkfont
+        import platform
+
+        # ── ttk theme ────────────────────────────────────────────────────────
+        # On Linux/X11 the built-in 'default' theme uses pixel-drawn 3-D
+        # borders that look very dated.  'clam' is the only built-in theme
+        # that renders cleanly with antialiased TrueType fonts on modern DEs.
+        style = ttk.Style(self.root)
+        if platform.system() == 'Linux':
+            style.theme_use('default')
+
+        # ── Xft hints (X11 only) ─────────────────────────────────────────────
+        # Tk reads Xft settings from the X resource database.  KDE typically
+        # writes hintfull + rgba=none which forces aggressive pixel hinting and
+        # disables sub-pixel rendering; at small sizes this can look aliased.
+        # Overriding to hintslight here gives smoother rendering for Tk text
+        # while leaving the rest of the desktop untouched.
+        if platform.system() == 'Linux':
+            try:
+                self.root.option_add('*Xft.hintstyle', 'hintslight')
+                self.root.option_add('*Xft.antialias', '1')
+            except Exception:
+                pass
+
+        # ── TkDefaultFont / TkTextFont ───────────────────────────────────────
+        # Leave untouched so the desktop environment's font (Cantarell,
+        # Noto Sans, Segoe UI, …) is picked up automatically.
+
+        # ── TkFixedFont ───────────────────────────────────────────────────────
+        # Pick the best available monospace family.  Used for logs, graph
+        # labels, command preview, and any widget that explicitly requests a
+        # fixed-width font.
+        fixed = tkfont.nametofont('TkFixedFont')
+        available = set(tkfont.families())
+        for candidate in ('JetBrains Mono', 'Fira Code', 'Cascadia Code',
+                          'Consolas', 'DejaVu Sans Mono', 'Liberation Mono',
+                          'Menlo', 'Courier New'):
+            if candidate in available:
+                fixed.configure(family=candidate, size=9)
+                break
 
     def _build_ui(self):
         # Top toolbar
@@ -343,12 +381,36 @@ class MainWindow:
                      textvariable=refresh_var, width=8).grid(
             row=2, column=1, sticky='w', **pad)
 
+        # Prometheus metrics sample interval
+        ttk.Label(dlg, text='Metrics sample (ms):').grid(
+            row=3, column=0, sticky='w', **pad)
+        metrics_var = tk.StringVar(value=str(self.monitor_tab._metrics_sample_ms))
+        ttk.Spinbox(dlg, from_=1000, to=60000, increment=1000,
+                     textvariable=metrics_var, width=8).grid(
+            row=3, column=1, sticky='w', **pad)
+
+        # Graph smoothing window
+        ttk.Label(dlg, text='Graph smooth (ms):').grid(
+            row=4, column=0, sticky='w', **pad)
+        smooth_var = tk.StringVar(value=str(self.monitor_tab._graph_smooth_ms))
+        ttk.Spinbox(dlg, from_=100, to=30000, increment=500,
+                     textvariable=smooth_var, width=8).grid(
+            row=4, column=1, sticky='w', **pad)
+
+        # Graph time window
+        ttk.Label(dlg, text='Graph window (s):').grid(
+            row=5, column=0, sticky='w', **pad)
+        window_var = tk.StringVar(value=str(self.monitor_tab._graph_time_window_s))
+        ttk.Spinbox(dlg, from_=30, to=600, increment=30,
+                     textvariable=window_var, width=8).grid(
+            row=5, column=1, sticky='w', **pad)
+
         ttk.Separator(dlg, orient='horizontal').grid(
-            row=3, column=0, columnspan=3, sticky='ew', pady=6)
+            row=6, column=0, columnspan=3, sticky='ew', pady=6)
 
         # Buttons
         btn_frame = ttk.Frame(dlg)
-        btn_frame.grid(row=4, column=0, columnspan=3, pady=(0, 8))
+        btn_frame.grid(row=7, column=0, columnspan=3, pady=(0, 8))
 
         def _ok():
             self.config_tab._server_bin_var.set(bin_var.get())
@@ -358,6 +420,20 @@ class MainWindow:
                 pass
             try:
                 self.monitor_tab._refresh_ms = max(500, int(refresh_var.get()))
+            except ValueError:
+                pass
+            try:
+                self.monitor_tab._metrics_sample_ms = max(1000, int(metrics_var.get()))
+            except ValueError:
+                pass
+            try:
+                self.monitor_tab._graph_smooth_ms = max(100, min(30000, int(smooth_var.get())))
+            except ValueError:
+                pass
+            try:
+                new_win = max(30, min(600, int(window_var.get())))
+                self.monitor_tab._graph_time_window_s = new_win
+                self.monitor_tab._chart.set_time_window(new_win)
             except ValueError:
                 pass
             self.save_preferences()
@@ -370,6 +446,23 @@ class MainWindow:
 
         dlg.columnconfigure(1, weight=1)
         dlg.wait_window()
+
+    def _drain_log_queue(self):
+        """Drain the log queue — runs on the main thread every 50 ms.
+        Processes up to 200 lines per tick to keep the UI responsive."""
+        MAX_PER_TICK = 200
+        count = 0
+        while count < MAX_PER_TICK:
+            try:
+                line = self._log_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                self._on_log_line(line)
+            except Exception as e:
+                print(f'drain: error processing log line: {e}')
+            count += 1
+        self.root.after(50, self._drain_log_queue)
 
     def _on_log_line(self, line):
         """Handle incoming log line from server process.
@@ -392,6 +485,14 @@ class MainWindow:
                     prefs = json.load(f)
                 if 'refresh_ms' in prefs:
                     self.monitor_tab._refresh_ms = int(prefs['refresh_ms'])
+                if 'metrics_sample_ms' in prefs:
+                    self.monitor_tab._metrics_sample_ms = int(prefs['metrics_sample_ms'])
+                if 'graph_smooth_ms' in prefs:
+                    self.monitor_tab._graph_smooth_ms = max(100, min(30000, int(prefs['graph_smooth_ms'])))
+                if 'graph_time_window_s' in prefs:
+                    w = max(30, min(600, int(prefs['graph_time_window_s'])))
+                    self.monitor_tab._graph_time_window_s = w
+                    self.monitor_tab._chart.set_time_window(w)
                 if 'health_timeout' in prefs:
                     self._health_check_timeout = int(prefs['health_timeout'])
                 server_bin = prefs.get('server_bin', '')
@@ -418,6 +519,9 @@ class MainWindow:
             import json
             prefs = {
                 'refresh_ms': self.monitor_tab._refresh_ms,
+                'metrics_sample_ms': self.monitor_tab._metrics_sample_ms,
+                'graph_smooth_ms':      self.monitor_tab._graph_smooth_ms,
+                'graph_time_window_s':  self.monitor_tab._graph_time_window_s,
                 'health_timeout': self._health_check_timeout,
                 'server_bin': self.config_tab._server_bin_var.get(),
                 'last_profile': getattr(self.config_tab, '_current_profile', ''),

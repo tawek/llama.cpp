@@ -3,9 +3,302 @@ Monitor tab - displays server metrics and system resources.
 Polls /slots, /metrics, /props endpoints and system_monitor.
 """
 
+import math
+import time
+import threading
+from collections import deque
 import tkinter as tk
 from tkinter import ttk
 
+
+# ── MetricsChart ──────────────────────────────────────────────────────────────
+
+class MetricsChart(ttk.Frame):
+    """Three stacked time-series charts: PP tok/s, TG tok/s, draft %."""
+
+    TICK_MS    = 250              # graph tick interval (ms)
+    MARGIN_L   = 46
+    MARGIN_R   = 18
+    MARGIN_T   = 14
+    MARGIN_B   = 28
+    GAP        = 18           # vertical gap between charts
+
+    C_BG       = '#1e1e1e'
+    C_PLOT_BG  = '#252525'
+    C_GRID     = '#3a3a3a'
+    C_AXIS     = '#666666'
+    C_PROMPT   = '#4e9eff'
+    C_GEN      = '#4ec94e'
+    C_DRAFT    = '#ffaa44'
+    C_TEXT     = '#aaaaaa'
+
+    def __init__(self, parent, time_window_s: int = 120):
+        super().__init__(parent)
+        self._time_window_s  = time_window_s
+        self._max_points     = time_window_s * (1000 // self.TICK_MS)
+        self._prompt = []
+        self._gen    = []
+        self._draft  = []
+        self._hover_x = None   # canvas x of last mouse position (None = no hover)
+        self._canvas = tk.Canvas(self, bg=self.C_BG, highlightthickness=0)
+        self._canvas.pack(fill='both', expand=True)
+        self._canvas.bind('<Configure>', lambda _e: self._redraw())
+        self._canvas.bind('<Motion>', self._on_hover)
+        self._canvas.bind('<Leave>',  self._on_leave)
+
+    def add_point(self, prompt_tps: float, gen_tps: float, draft_pct: float):
+        self._prompt.append(max(0.0, prompt_tps))
+        self._gen.append(max(0.0, gen_tps))
+        self._draft.append(max(0.0, min(100.0, draft_pct)))
+        if len(self._prompt) > self._max_points:
+            self._prompt = self._prompt[-self._max_points:]
+            self._gen    = self._gen[-self._max_points:]
+            self._draft  = self._draft[-self._max_points:]
+        self._redraw()
+
+    def clear(self):
+        self._prompt.clear()
+        self._gen.clear()
+        self._draft.clear()
+        self._redraw()
+
+    def set_time_window(self, seconds: int):
+        """Change the visible time window; trims or pads history accordingly."""
+        self._time_window_s = max(10, seconds)
+        new_max = self._time_window_s * (1000 // self.TICK_MS)
+        if new_max < self._max_points:
+            self._prompt = self._prompt[-new_max:]
+            self._gen    = self._gen[-new_max:]
+            self._draft  = self._draft[-new_max:]
+        self._max_points = new_max
+        self._redraw()
+
+    # ── drawing ──────────────────────────────────────────────────────────────
+
+    def _redraw(self):
+        c = self._canvas
+        c.delete('all')
+        W = c.winfo_width()
+        H = c.winfo_height()
+        if W < 20 or H < 20:
+            return
+
+        ml   = self.MARGIN_L
+        mr   = self.MARGIN_R
+        mt   = self.MARGIN_T
+        mb   = self.MARGIN_B
+        gap  = self.GAP
+        n_gl = 4               # grid lines per graph
+
+        usable_h = H - mt - mb - 2 * gap
+        # PP gets 40 %, TG gets 40 %, draft gets 20 %
+        g1_h = int(usable_h * 0.40)
+        g2_h = int(usable_h * 0.40)
+        g3_h = usable_h - g1_h - g2_h
+
+        # Graph bounds
+        g1_x0, g1_y0 = ml, mt
+        g1_x1, g1_y1 = W - mr, mt + g1_h
+
+        g2_x0, g2_y0 = ml, g1_y1 + gap
+        g2_x1, g2_y1 = W - mr, g2_y0 + g2_h
+
+        g3_x0, g3_y0 = ml, g2_y1 + gap
+        g3_x1, g3_y1 = W - mr, g3_y0 + g3_h
+
+        plot_w = W - ml - mr
+
+        # Backgrounds
+        c.create_rectangle(g1_x0, g1_y0, g1_x1, g1_y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
+        c.create_rectangle(g2_x0, g2_y0, g2_x1, g2_y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
+        c.create_rectangle(g3_x0, g3_y0, g3_x1, g3_y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
+
+        # X-axis labels (bottom only)
+        c.create_text(ml,     H - 10, text=f'−{self._time_window_s}s', anchor='w',
+                      fill=self.C_TEXT, font=('Consolas', 7))
+        c.create_text(W - mr, H - 10, text='now', anchor='e',
+                      fill=self.C_TEXT, font=('Consolas', 7))
+
+        # ── Graph 1: PP tok/s ─────────────────────────────────────────────────
+        max_pp = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
+        self._draw_grid(c, g1_x0, g1_y0, g1_x1, g1_y1, ml, max_pp, n_gl,
+                        fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
+        c.create_text(6, (g1_y0 + g1_y1) // 2, text='pp', angle=90,
+                      fill=self.C_AXIS, font=('Consolas', 7))
+        c.create_text(g1_x1 - 4, g1_y0 + 8, text='PP tok/s', anchor='e',
+                      fill=self.C_PROMPT, font=('Consolas', 7))
+
+        # ── Graph 2: TG tok/s ─────────────────────────────────────────────────
+        max_tg = self._nice_ceil(max(self._gen)) if self._gen else 10.0
+        self._draw_grid(c, g2_x0, g2_y0, g2_x1, g2_y1, ml, max_tg, n_gl,
+                        fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
+        c.create_text(6, (g2_y0 + g2_y1) // 2, text='tg', angle=90,
+                      fill=self.C_AXIS, font=('Consolas', 7))
+        c.create_text(g2_x1 - 4, g2_y0 + 8, text='TG tok/s', anchor='e',
+                      fill=self.C_GEN, font=('Consolas', 7))
+
+        # ── Graph 3: draft % ──────────────────────────────────────────────────
+        self._draw_grid(c, g3_x0, g3_y0, g3_x1, g3_y1, ml, 100.0, n_gl,
+                        fmt=lambda v: f'{v:.0f}%')
+        c.create_text(6, (g3_y0 + g3_y1) // 2, text='draft', angle=90,
+                      fill=self.C_AXIS, font=('Consolas', 7))
+        c.create_text(g3_x1 - 4, g3_y0 + 8, text='Draft %', anchor='e',
+                      fill=self.C_DRAFT, font=('Consolas', 7))
+
+        # ── Draw lines ────────────────────────────────────────────────────────
+        n = len(self._prompt)
+        if n < 2:
+            return
+
+        offset = self._max_points - n
+
+        def to_x(i):
+            return ml + ((i + offset) / (self._max_points - 1)) * plot_w
+
+        def make_to_y(y0, y1, max_val):
+            def to_y(v):
+                return y1 - (v / max_val) * (y1 - y0)
+            return to_y
+
+        def draw_line(data, color, to_y):
+            coords = []
+            for i, v in enumerate(data):
+                coords.extend([to_x(i), to_y(v)])
+            if len(coords) >= 4:
+                c.create_line(*coords, fill=color, width=1.5, smooth=True)
+
+        draw_line(self._prompt, self.C_PROMPT, make_to_y(g1_y0, g1_y1, max_pp))
+        draw_line(self._gen,    self.C_GEN,    make_to_y(g2_y0, g2_y1, max_tg))
+        draw_line(self._draft,  self.C_DRAFT,  make_to_y(g3_y0, g3_y1, 100.0))
+
+        self._draw_hover()
+
+    # ── hover crosshair ───────────────────────────────────────────────────────
+
+    def _on_hover(self, event):
+        self._hover_x = event.x
+        self._draw_hover()
+
+    def _on_leave(self, _event):
+        self._hover_x = None
+        self._canvas.delete('hover')
+
+    def _geometry(self, W, H):
+        """Return panel geometry — mirrors _redraw() so hover uses same bounds."""
+        ml, mr, mt, mb, gap = (self.MARGIN_L, self.MARGIN_R,
+                                self.MARGIN_T, self.MARGIN_B, self.GAP)
+        usable_h = H - mt - mb - 2 * gap
+        g1_h = int(usable_h * 0.40)
+        g2_h = int(usable_h * 0.40)
+        g3_h = usable_h - g1_h - g2_h
+        return dict(
+            ml=ml, mr=mr, plot_w=W - ml - mr,
+            g1=(ml, mt,            W - mr, mt + g1_h),
+            g2=(ml, mt + g1_h + gap,       W - mr, mt + g1_h + gap + g2_h),
+            g3=(ml, mt + g1_h + gap + g2_h + gap,
+                W - mr, mt + g1_h + gap + g2_h + gap + g3_h),
+        )
+
+    def _draw_hover(self):
+        c = self._canvas
+        c.delete('hover')
+        if self._hover_x is None:
+            return
+        W = c.winfo_width()
+        H = c.winfo_height()
+        if W < 20 or H < 20:
+            return
+
+        g = self._geometry(W, H)
+        ml, mr, plot_w = g['ml'], g['mr'], g['plot_w']
+        mx = self._hover_x
+
+        # Only show when cursor is inside the plot area
+        if mx < ml or mx > W - mr:
+            return
+
+        n = len(self._prompt)
+        if n < 2:
+            return
+
+        # Map canvas-x to a (possibly fractional) data index
+        frac  = (mx - ml) / plot_w
+        idx_f = frac * (self._max_points - 1) - (self._max_points - n)
+        if idx_f < 0 or idx_f > n - 1:
+            return
+
+        i0 = int(idx_f)
+        i1 = min(i0 + 1, n - 1)
+        t  = idx_f - i0
+
+        def interp(data):
+            return data[i0] * (1 - t) + data[i1] * t
+
+        pp_val = interp(self._prompt)
+        tg_val = interp(self._gen)
+        dr_val = interp(self._draft)
+
+        max_pp = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
+        max_tg = self._nice_ceil(max(self._gen))    if self._gen    else 10.0
+
+        # Vertical rule spanning top of panel-1 to bottom of panel-3
+        top  = g['g1'][1]
+        bot  = g['g3'][3]
+        c.create_line(mx, top, mx, bot,
+                      fill='#ffffff', width=1, dash=(3, 3), tags='hover')
+
+        # Per-panel: dot at intersection + value label
+        panels = [
+            (g['g1'], max_pp, pp_val, self.C_PROMPT,
+             lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k'),
+            (g['g2'], max_tg, tg_val, self.C_GEN,
+             lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k'),
+            (g['g3'], 100.0,  dr_val, self.C_DRAFT,
+             lambda v: f'{v:.1f}%'),
+        ]
+
+        for (x0, py0, x1, py1), max_val, val, color, fmt in panels:
+            cy = py1 - (val / max_val) * (py1 - py0)
+            cy = max(py0, min(py1, cy))
+            # Dot
+            r = 3
+            c.create_oval(mx - r, cy - r, mx + r, cy + r,
+                          fill=color, outline='', tags='hover')
+            # Label — raised 14 px above dot; flip side near right edge
+            label  = fmt(val)
+            lx     = mx + 6 if mx + 52 < x1 else mx - 6
+            anchor = 'w'     if lx > mx      else 'e'
+            ty     = cy - 14
+            # Black shadow (+1, +1) then white foreground
+            c.create_text(lx + 1, ty + 1, text=label, fill='#000000', anchor=anchor,
+                          font=('Consolas', 8, 'bold'), tags='hover')
+            c.create_text(lx,     ty,     text=label, fill='#ffffff', anchor=anchor,
+                          font=('Consolas', 8, 'bold'), tags='hover')
+
+    def _draw_grid(self, c, x0, y0, x1, y1, ml, max_val, n, fmt):
+        """Draw horizontal grid lines and Y-axis labels for one graph."""
+        for i in range(n + 1):
+            frac = i / n
+            y = y1 - frac * (y1 - y0)
+            c.create_line(x0, y, x1, y, fill=self.C_GRID, dash=(2, 4))
+            c.create_text(ml - 4, y, text=fmt(frac * max_val), anchor='e',
+                          fill=self.C_TEXT, font=('Consolas', 7))
+
+    @staticmethod
+    def _nice_ceil(value: float) -> float:
+        """Round value up to a 'nice' number (1/2/5 × 10^n)."""
+        if value <= 0:
+            return 1.0
+        exp = math.floor(math.log10(value))
+        base = 10 ** exp
+        for mult in (1, 2, 5, 10):
+            candidate = base * mult
+            if candidate >= value:
+                return float(candidate)
+        return float(base * 10)
+
+
+# ── MonitorTab ────────────────────────────────────────────────────────────────
 
 class MonitorTab(ttk.Frame):
     """Real-time monitoring panel."""
@@ -17,9 +310,28 @@ class MonitorTab(ttk.Frame):
         self._sys_monitor = None
         self._process_mgr = None
         self._refresh_ms = 2000
+        self._metrics_sample_ms = 5000   # prometheus /metrics probe cadence
         self._after_id = None
+        self._metrics_after_id = None    # independent prometheus loop
         self._metrics = {}
-        self._slot_widgets = {}   # slot_id -> dict of widgets
+        self._slot_widgets = {}          # slot_id -> dict of widgets
+        self._slot_last_proc: dict = {}  # slot_id -> monotonic time last seen processing
+        self._slot_n_ctx: dict = {}      # slot_id -> last known n_ctx (max, from load_model log)
+        self._slot_ctx_tokens: dict = {}     # slot_id -> latest print_timing n_tokens
+        self._slot_ctx_checkpoint: dict = {} # slot_id -> latest create_check n_tokens
+        self._n_ctx_fallback = 0         # populated from prometheus n_ctx_size / n_slots
+        # Raw sample buffers: (monotonic_time, value) tuples.
+        # maxlen covers ~10 min at fastest realistic poll rate (1 Hz) — plenty.
+        _MAX_RAW = 600
+        self._raw_prompt: deque = deque(maxlen=_MAX_RAW)
+        self._raw_gen:    deque = deque(maxlen=_MAX_RAW)
+        self._raw_draft:  deque = deque(maxlen=_MAX_RAW)
+        # Smoothing window in ms: average all samples within [now-window, now];
+        # if none fall inside the window the most recent sample is used as-is.
+        self._graph_smooth_ms:  int = 2000
+        # Visible time window in seconds (controls scroll speed)
+        self._graph_time_window_s:  int = 120
+        self._graph_tick_id = None
         self._build_ui()
 
     def set_dependencies(self, server_api, sys_monitor, process_mgr):
@@ -29,9 +341,16 @@ class MonitorTab(ttk.Frame):
         self._process_mgr = process_mgr
 
     def _build_ui(self):
-        # ── Server Metrics ────────────────────────────────────────────────
-        sm_frame = ttk.LabelFrame(self, text='Server Metrics', padding=(8, 4))
-        sm_frame.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+        # ── Vertical paned window: info row (top) + chart (bottom, draggable) ──
+        self._paned = ttk.PanedWindow(self, orient='vertical')
+        self._paned.pack(fill='both', expand=True, padx=4, pady=4)
+
+        top = ttk.Frame(self._paned)
+        self._paned.add(top, weight=0)
+
+        # ── Server Metrics ────────────────────────────────────────────────────
+        sm_frame = ttk.LabelFrame(top, text='Server Metrics', padding=(8, 4))
+        sm_frame.pack(side='left', fill='both', expand=True, padx=(0, 4))
 
         self._lbl_prompt_tps = ttk.Label(sm_frame, text='Prompt: -- tok/s')
         self._lbl_prompt_tps.pack(fill='x', pady=1)
@@ -39,31 +358,15 @@ class MonitorTab(ttk.Frame):
         self._lbl_gen_tps.pack(fill='x', pady=1)
         self._lbl_draft = ttk.Label(sm_frame, text='Draft: --%')
         self._lbl_draft.pack(fill='x', pady=1)
-        self._lbl_kv = ttk.Label(sm_frame, text='KV Cache: -- MiB')
-        self._lbl_kv.pack(fill='x', pady=1)
         self._lbl_graphs = ttk.Label(sm_frame, text='Graphs: --')
         self._lbl_graphs.pack(fill='x', pady=1)
         self._lbl_status = ttk.Label(sm_frame, text='Status: Idle',
                                       foreground='gray')
         self._lbl_status.pack(fill='x', pady=1)
 
-        ttk.Separator(sm_frame, orient='horizontal').pack(fill='x', pady=(4, 2))
-        ttk.Label(sm_frame, text='Session averages:',
-                  font=('', 8), foreground='gray').pack(fill='x')
-        self._lbl_avg_prompt = ttk.Label(sm_frame, text='Avg Prompt: --')
-        self._lbl_avg_prompt.pack(fill='x', pady=1)
-        self._lbl_avg_gen = ttk.Label(sm_frame, text='Avg Gen: --')
-        self._lbl_avg_gen.pack(fill='x', pady=1)
-        self._lbl_avg_draft = ttk.Label(sm_frame, text='Avg Draft: --')
-        self._lbl_avg_draft.pack(fill='x', pady=1)
-        self._lbl_checkpoints = ttk.Label(sm_frame, text='Checkpoints: --')
-        self._lbl_checkpoints.pack(fill='x', pady=1)
-        self._lbl_cache = ttk.Label(sm_frame, text='Cache: --')
-        self._lbl_cache.pack(fill='x', pady=1)
-
-        # ── Slots ─────────────────────────────────────────────────────────
-        slots_frame = ttk.LabelFrame(self, text='Slots', padding=(8, 4))
-        slots_frame.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+        # ── Slots ─────────────────────────────────────────────────────────────
+        slots_frame = ttk.LabelFrame(top, text='Slots', padding=(8, 4))
+        slots_frame.pack(side='left', fill='both', expand=True, padx=4)
 
         self._slots_header = ttk.Label(slots_frame,
                                         text='Idle: -- | Processing: --',
@@ -71,7 +374,6 @@ class MonitorTab(ttk.Frame):
         self._slots_header.pack(fill='x', pady=(0, 4))
         ttk.Separator(slots_frame, orient='horizontal').pack(fill='x', pady=(0, 4))
 
-        # Scrollable inner frame for slot rows
         canvas = tk.Canvas(slots_frame, highlightthickness=0)
         scroll = ttk.Scrollbar(slots_frame, orient='vertical',
                                 command=canvas.yview)
@@ -79,25 +381,27 @@ class MonitorTab(ttk.Frame):
         self._slots_inner = ttk.Frame(canvas)
         self._slots_inner.bind(
             '<Configure>',
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox('all')))
-        canvas.create_window((0, 0), window=self._slots_inner, anchor='nw')
+            lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        win_id = canvas.create_window((0, 0), window=self._slots_inner, anchor='nw')
+        canvas.bind('<Configure>', lambda e: canvas.itemconfig(win_id, width=e.width))
         canvas.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
 
-        # Column headers
+        # Header row — columns must match _create_slot_row exactly
         hdr = ttk.Frame(self._slots_inner)
         hdr.pack(fill='x')
-        ttk.Label(hdr, text='Slot',  width=5,  anchor='w').grid(row=0, column=0)
-        ttk.Label(hdr, text='State', width=6,  anchor='w').grid(row=0, column=1)
-        ttk.Label(hdr, text='Context',          anchor='w').grid(row=0, column=2, sticky='ew', padx=4)
-        ttk.Label(hdr, text='Tokens', width=12, anchor='e').grid(row=0, column=3)
+        ttk.Label(hdr, text='#',     width=4,  anchor='w').grid(row=0, column=0, padx=(0, 2))
+        ttk.Label(hdr, text='State', width=5,  anchor='w').grid(row=0, column=1, padx=(0, 2))
+        ttk.Label(hdr, text='',                anchor='w').grid(row=0, column=2, sticky='ew', padx=(0, 4))
+        ttk.Label(hdr, text='ckpt',  width=4,  anchor='e').grid(row=0, column=3, padx=2)
+        ttk.Label(hdr, text='proc',  width=4,  anchor='e').grid(row=0, column=4, padx=2)
+        ttk.Label(hdr, text='ctx',   width=4,  anchor='e').grid(row=0, column=5, padx=(2, 4))
         hdr.columnconfigure(2, weight=1)
         self._slots_hdr_frame = hdr
 
-        # ── System Resources ──────────────────────────────────────────────
-        sys_frame = ttk.LabelFrame(self, text='System Resources', padding=(8, 4))
-        sys_frame.pack(side='left', fill='both', expand=True, padx=4, pady=4)
+        # ── System Resources ──────────────────────────────────────────────────
+        sys_frame = ttk.LabelFrame(top, text='System Resources', padding=(8, 4))
+        sys_frame.pack(side='left', fill='both', expand=True, padx=(4, 0))
 
         self._lbl_cpu  = ttk.Label(sys_frame, text='CPU:  --%')
         self._lbl_cpu.pack(fill='x', pady=1)
@@ -131,48 +435,120 @@ class MonitorTab(ttk.Frame):
         self._bar_temp = ttk.Progressbar(sys_frame, maximum=100, length=160)
         self._bar_temp.pack(fill='x', pady=(0, 4))
 
-    # ── Monitoring control ────────────────────────────────────────────────
+        # ── Chart pane (bottom, expands, draggable sash above it) ────────────
+        chart_frame = ttk.LabelFrame(self._paned, text='Performance', padding=(8, 6))
+        self._paned.add(chart_frame, weight=1)
+
+        self._chart = MetricsChart(chart_frame, time_window_s=self._graph_time_window_s)
+        self._chart.pack(fill='both', expand=True)
+
+        # Set initial sash position after the window is mapped
+        self.after(100, self._set_initial_sash)
+
+    # ── Monitoring control ────────────────────────────────────────────────────
+
+    def _set_initial_sash(self):
+        """Set sash so info row gets its natural height and chart fills the rest."""
+        try:
+            self._paned.sashpos(0, self._paned.winfo_height() // 3)
+        except Exception:
+            pass
 
     def _start_monitoring(self):
         self._poll_once()
+        self._poll_metrics_once()
+        self._graph_tick()
 
     def _stop_monitoring(self):
         if self._after_id:
             self.after_cancel(self._after_id)
             self._after_id = None
+        if self._metrics_after_id:
+            self.after_cancel(self._metrics_after_id)
+            self._metrics_after_id = None
+        if self._graph_tick_id:
+            self.after_cancel(self._graph_tick_id)
+            self._graph_tick_id = None
+
+    def _graph_tick(self):
+        """Push one smoothed point to the chart at a fixed 4 Hz regardless of fetch state."""
+        now    = time.monotonic()
+        cutoff = now - self._graph_smooth_ms / 1000.0
+
+        def _avg(buf: deque) -> float:
+            if not buf:
+                return 0.0
+            # Collect samples within the smoothing window
+            window = [v for t, v in buf if t >= cutoff]
+            if window:
+                return sum(window) / len(window)
+            # Window is empty (no new data) — hold the last known value
+            return buf[-1][1]
+
+        self._chart.add_point(_avg(self._raw_prompt),
+                              _avg(self._raw_gen),
+                              _avg(self._raw_draft))
+        self._graph_tick_id = self.after(250, self._graph_tick)
 
     def _schedule_next(self):
         self._after_id = self.after(self._refresh_ms, self._poll_once)
+
+    def _schedule_next_metrics(self):
+        self._metrics_after_id = self.after(self._metrics_sample_ms, self._poll_metrics_once)
+
+    def _poll_metrics_once(self):
+        if self._metrics_after_id:
+            self.after_cancel(self._metrics_after_id)
+            self._metrics_after_id = None
+        if self._server_api:
+            threading.Thread(target=self._bg_fetch_metrics, daemon=True).start()
+        self._schedule_next_metrics()
 
     def _poll_once(self):
         if self._after_id:
             self.after_cancel(self._after_id)
             self._after_id = None
 
-        try:
-            self._fetch_server_metrics()
-        except Exception as e:
-            print(f'monitor: fetch_server_metrics error: {e}')
-
-        try:
-            self._fetch_slots()
-        except Exception as e:
-            print(f'monitor: fetch_slots error: {e}')
-
+        # System stats are local reads — safe and fast on main thread
         try:
             self._fetch_system_stats()
         except Exception as e:
             print(f'monitor: fetch_system_stats error: {e}')
 
+        # All HTTP calls go off-thread so a slow/busy server never blocks the UI
+        if self._server_api:
+            threading.Thread(target=self._bg_poll_server, daemon=True).start()
+
         self._schedule_next()
 
-    # ── Fetch helpers ─────────────────────────────────────────────────────
+    # ── Background workers (run in daemon threads, NO widget access) ──────────
 
-    def _fetch_server_metrics(self):
-        if not self._server_api:
-            return
+    def _bg_poll_server(self):
+        """Fetch /health and /slots in background; dispatch results to main thread."""
+        try:
+            health = self._server_api.health() or self._server_api.health_v1()
+            self.after(0, self._apply_health, health)
+        except Exception as e:
+            print(f'monitor: bg health error: {e}')
+        try:
+            slots_data = self._server_api.slots()
+            self.after(0, self._apply_slots, slots_data)
+        except Exception as e:
+            print(f'monitor: bg slots error: {e}')
 
-        health = self._server_api.health() or self._server_api.health_v1()
+    def _bg_fetch_metrics(self):
+        """Fetch /metrics in background; dispatch parsed dict to main thread."""
+        try:
+            raw = self._server_api.metrics()
+            if raw:
+                from api_client import parse_prometheus_metrics
+                self.after(0, self._apply_metrics, parse_prometheus_metrics(raw))
+        except Exception as e:
+            print(f'monitor: bg metrics error: {e}')
+
+    # ── Main-thread apply callbacks ───────────────────────────────────────────
+
+    def _apply_health(self, health):
         if health:
             status = health.get('status', 'unknown')
             color = 'green' if status == 'ok' else 'red'
@@ -180,22 +556,23 @@ class MonitorTab(ttk.Frame):
         else:
             self._lbl_status.config(text='Status: Disconnected', foreground='gray')
 
-        raw = self._server_api.metrics()
-        if raw:
-            from api_client import parse_prometheus_metrics
-            parsed = parse_prometheus_metrics(raw)
-            if parsed.get('prompt_tokens_seconds', 0) > 0:
-                self._lbl_prompt_tps.config(
-                    text=f'Prompt: {parsed["prompt_tokens_seconds"]:.1f} tok/s')
-            if parsed.get('predicted_tokens_seconds', 0) > 0:
-                self._lbl_gen_tps.config(
-                    text=f'Gen: {parsed["predicted_tokens_seconds"]:.1f} tok/s')
+    def _apply_metrics(self, parsed):
+        now = time.monotonic()
+        if parsed.get('prompt_tokens_seconds', 0) > 0:
+            val = parsed['prompt_tokens_seconds']
+            self._raw_prompt.append((now, val))
+            self._lbl_prompt_tps.config(text=f'Prompt: {val:.1f} tok/s')
+        if parsed.get('predicted_tokens_seconds', 0) > 0:
+            val = parsed['predicted_tokens_seconds']
+            self._raw_gen.append((now, val))
+            self._lbl_gen_tps.config(text=f'Gen: {val:.1f} tok/s')
 
-    def _fetch_slots(self):
-        if not self._server_api:
-            return
+        n_ctx_size = int(parsed.get('n_ctx_size', 0))
+        if n_ctx_size > 0:
+            n_slots = max(len(self._slot_widgets), 1)
+            self._n_ctx_fallback = n_ctx_size // n_slots
 
-        slots_data = self._server_api.slots()
+    def _apply_slots(self, slots_data):
         if slots_data is None:
             self._slots_header.config(text='Idle: -- | Processing: --')
             return
@@ -220,43 +597,85 @@ class MonitorTab(ttk.Frame):
                 del self._slot_widgets[sid]
 
     def _create_slot_row(self, sid):
-        row = len(self._slot_widgets) + 1   # +1 for header row
         f = ttk.Frame(self._slots_inner)
         f.pack(fill='x', pady=1)
 
-        lbl_id    = ttk.Label(f, text=f'#{sid}', width=5, anchor='w')
-        lbl_id.grid(row=0, column=0)
+        ttk.Label(f, text=f'#{sid}', width=4, anchor='w').grid(row=0, column=0, padx=(0, 2))
 
-        lbl_state = ttk.Label(f, text='IDLE', width=6, anchor='w')
-        lbl_state.grid(row=0, column=1)
+        lbl_state = ttk.Label(f, text='IDLE', width=5, anchor='w')
+        lbl_state.grid(row=0, column=1, padx=(0, 2))
 
-        bar = ttk.Progressbar(f, maximum=100, length=100, mode='determinate')
-        bar.grid(row=0, column=2, sticky='ew', padx=4)
+        bar = ttk.Progressbar(f, maximum=100, mode='determinate')
+        bar.grid(row=0, column=2, sticky='ew', padx=(0, 4))
 
-        lbl_ctx = ttk.Label(f, text='0 / 0', width=12, anchor='e')
-        lbl_ctx.grid(row=0, column=3)
+        lbl_ckpt  = ttk.Label(f, text='', width=4, anchor='e')
+        lbl_since = ttk.Label(f, text='', width=4, anchor='e')
+        lbl_max   = ttk.Label(f, text='', width=4, anchor='e')
+        lbl_ckpt.grid( row=0, column=3, padx=2)
+        lbl_since.grid(row=0, column=4, padx=2)
+        lbl_max.grid(  row=0, column=5, padx=(2, 4))
 
         f.columnconfigure(2, weight=1)
 
         self._slot_widgets[sid] = {
-            'frame': f,
+            'frame':     f,
             'lbl_state': lbl_state,
-            'bar': bar,
-            'lbl_ctx': lbl_ctx,
+            'bar':       bar,
+            'lbl_ckpt':  lbl_ckpt,
+            'lbl_since': lbl_since,
+            'lbl_max':   lbl_max,
         }
+
+    @staticmethod
+    def _kt(v: int) -> str:
+        """Integer kTokens, no suffix."""
+        return str(round(v / 1000)) if v else ''
+
+    def _set_slot_ctx_cells(self, w, ckpt: int, since: int, n_ctx: int, pct: float):
+        w['lbl_ckpt'].config(text=self._kt(ckpt))
+        w['lbl_since'].config(text=self._kt(since))
+        w['lbl_max'].config(text=self._kt(n_ctx) if n_ctx else '?')
+        w['bar']['value'] = pct
 
     def _update_slot_row(self, sid, slot):
         w = self._slot_widgets[sid]
         is_proc = slot.get('is_processing', False)
-        ctx     = slot.get('n_past', 0)
-        n_ctx   = slot.get('n_ctx', 0)
-        pct     = ctx / n_ctx * 100 if n_ctx > 0 else 0
+
+        # n_ctx (max): cache first non-zero; fall back to prometheus estimate
+        n_ctx = slot.get('n_ctx', 0)
+        if n_ctx > 0:
+            self._slot_n_ctx[sid] = n_ctx
+        else:
+            n_ctx = self._slot_n_ctx.get(sid, self._n_ctx_fallback)
+
+        # next_token may be [] when no task — guard before calling .get()
+        raw_nt    = slot.get('next_token')
+        n_decoded = raw_nt.get('n_decoded', 0) if isinstance(raw_nt, dict) else 0
+
+        # Sticky PROC: keep showing for 5 s after last seen processing
+        if is_proc:
+            self._slot_last_proc[sid] = time.monotonic()
+        show_proc = is_proc or (time.monotonic() - self._slot_last_proc.get(sid, 0) < 5.0)
+
+        log_tokens = self._slot_ctx_tokens.get(sid, 0)
+        log_ckpt   = self._slot_ctx_checkpoint.get(sid, 0)
+
+        if log_tokens > 0 or log_ckpt > 0:
+            # log_tokens  = tokens processed in the current PP batch (resets each task)
+            # log_ckpt    = total context tokens at the last checkpoint (absolute)
+            # They are in different reference frames; show each directly.
+            # Bar tracks context utilisation at the last checkpoint.
+            pct = log_ckpt / n_ctx * 100 if n_ctx else 0
+            self._set_slot_ctx_cells(w, log_ckpt, log_tokens, n_ctx, pct)
+        elif n_decoded > 0:
+            pct = n_decoded / n_ctx * 100 if n_ctx else 0
+            self._set_slot_ctx_cells(w, 0, n_decoded, n_ctx, pct)
+        else:
+            self._set_slot_ctx_cells(w, 0, 0, n_ctx, 0)
 
         w['lbl_state'].config(
-            text='PROC' if is_proc else 'IDLE',
-            foreground='green' if is_proc else 'gray')
-        w['bar']['value'] = pct
-        w['lbl_ctx'].config(text=f'{ctx} / {n_ctx}')
+            text='PROC' if show_proc else 'IDLE',
+            foreground='green' if show_proc else 'gray')
 
     def _fetch_system_stats(self):
         if not self._sys_monitor:
@@ -300,35 +719,65 @@ class MonitorTab(ttk.Frame):
             self._lbl_temp.config(text=f'Temp: {temp}°C')
             self._bar_temp['value'] = tpct
 
-    # ── Called from main.py log parser ───────────────────────────────────
+    # ── Called from main.py log parser ────────────────────────────────────────
 
     def update_from_log(self, metrics):
-        """Update instant metrics from a single parsed log event."""
-        if not metrics:
-            return
-        self._lbl_prompt_tps.config(
-            text=f'Prompt: {metrics.get("prompt_per_second", 0):.1f} tok/s')
-        self._lbl_gen_tps.config(
-            text=f'Gen: {metrics.get("gen_per_second", 0):.1f} tok/s')
-        self._lbl_draft.config(
-            text=f'Draft: {metrics.get("draft_acceptance_rate", 0) * 100:.1f}%')
-        self._lbl_kv.config(
-            text=f'KV Cache: {metrics.get("cache_size_mib", 0):.1f} MiB')
-        self._lbl_graphs.config(
-            text=f'Graphs: {metrics.get("graphs_reused", 0)} reused')
+        """Update instant metrics from a single parsed log event (legacy, unused)."""
+        pass
 
     def update_from_metrics(self, metrics):
-        """Update session-average stats from a LogMetrics object."""
-        self._lbl_avg_prompt.config(
-            text=f'Avg Prompt: {metrics.avg_prompt_per_second:.1f} tok/s')
-        self._lbl_avg_gen.config(
-            text=f'Avg Gen: {metrics.avg_gen_per_second:.1f} tok/s')
-        self._lbl_avg_draft.config(
-            text=f'Avg Draft: {metrics.avg_draft_acceptance * 100:.1f}%')
-        self._lbl_checkpoints.config(
-            text=f'Checkpoints: {metrics.checkpoints_created}')
-        self._lbl_cache.config(
-            text=f'Cache: {metrics.cache_size_mib:.1f} / {metrics.cache_limit_mib:.1f} MiB')
+        """Update raw sample buffers from log parser events."""
+        now = time.monotonic()
+        if metrics.prompt_per_second > 0:
+            self._raw_prompt.append((now, metrics.prompt_per_second))
+            self._lbl_prompt_tps.config(
+                text=f'Prompt: {metrics.prompt_per_second:.1f} tok/s')
+        if metrics.gen_per_second > 0:
+            self._raw_gen.append((now, metrics.gen_per_second))
+            self._lbl_gen_tps.config(
+                text=f'Gen: {metrics.gen_per_second:.1f} tok/s')
+        if metrics.draft_acceptance_rate > 0 or metrics.draft_total > 0:
+            pct = metrics.draft_acceptance_rate * 100
+            self._raw_draft.append((now, pct))
+            self._lbl_draft.config(text=f'Draft: {pct:.1f}%')
+        if metrics.graphs_reused > 0:
+            self._lbl_graphs.config(
+                text=f'Graphs: {metrics.graphs_reused} reused')
+
+        # Absorb any per-slot n_ctx values sniffed from "slot launch" log lines
+        for sid, n_ctx in metrics.slot_n_ctx.items():
+            if n_ctx > 0:
+                self._slot_n_ctx[sid] = n_ctx
+
+        # Clear PP state for slots that just received a new task
+        for sid in metrics.slot_task_started:
+            self._slot_ctx_tokens.pop(sid, None)
+            self._slot_ctx_checkpoint.pop(sid, None)
+            self._refresh_slot_ctx(sid)
+
+        # Absorb per-slot PP progress from print_timing lines
+        for sid, n_tokens in metrics.slot_ctx_tokens.items():
+            self._slot_ctx_tokens[sid] = n_tokens
+            self._refresh_slot_ctx(sid)
+
+        # Absorb per-slot checkpoint token counts from create_check lines
+        for sid, n_tokens in metrics.slot_ctx_checkpoint.items():
+            self._slot_ctx_checkpoint[sid] = n_tokens
+            self._refresh_slot_ctx(sid)
+
+    def _refresh_slot_ctx(self, sid):
+        """Immediately update the ctx cells for a slot using log-derived data."""
+        if sid not in self._slot_widgets:
+            return
+        w         = self._slot_widgets[sid]
+        n_ctx     = self._slot_n_ctx.get(sid, self._n_ctx_fallback)
+        log_tokens = self._slot_ctx_tokens.get(sid, 0)
+        log_ckpt   = self._slot_ctx_checkpoint.get(sid, 0)
+        if log_tokens > 0 or log_ckpt > 0:
+            pct = log_ckpt / n_ctx * 100 if n_ctx else 0
+            self._set_slot_ctx_cells(w, log_ckpt, log_tokens, n_ctx, pct)
+        else:
+            self._set_slot_ctx_cells(w, 0, 0, n_ctx, 0)
 
     def stop(self):
         self._stop_monitoring()

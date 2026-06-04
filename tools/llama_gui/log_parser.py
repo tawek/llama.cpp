@@ -34,6 +34,19 @@ class LogMetrics:
     cache_size_mib: float = 0.0
     cache_limit_mib: float = 0.0
 
+    # Per-slot context sizes sniffed from "slot launch" log lines
+    slot_n_ctx: dict = field(default_factory=dict, repr=False)  # {slot_id: n_ctx}
+
+    # Per-slot PP progress from print_timing lines
+    slot_ctx_tokens: dict = field(default_factory=dict, repr=False)     # {slot_id: n_tokens}
+    slot_ctx_progress: dict = field(default_factory=dict, repr=False)   # {slot_id: 0..1}
+
+    # Per-slot last checkpoint token count from create_check lines
+    slot_ctx_checkpoint: dict = field(default_factory=dict, repr=False) # {slot_id: n_tokens}
+
+    # Slots that just received a new task (launch_slot_ fired); caller should reset ctx state
+    slot_task_started: list = field(default_factory=list, repr=False)   # [slot_id, ...]
+
     @property
     def avg_prompt_per_second(self) -> float:
         if not self._prompt_rates:
@@ -96,17 +109,36 @@ CHECKPOINT_RE = re.compile(
 )
 
 PROMPT_CACHE_RE = re.compile(
-    r'prompt cache state:\s+(\d+)\s+prompts,\s+([\d.]+)\s+MiB'
-    r'\s*\((?:limits:\s*([\d.]+)\s+MiB,\s+(\d+)\s+tokens,\s+(\d+)\s+est\))?'
+    r'cache state:\s+(\d+)\s+prompts,\s+([\d.]+)\s+MiB'
+    r'(?:\s*\(limits:\s*([\d.]+)\s+MiB,\s+(\d+)\s+tokens,\s+\d+\s+est\))?'
 )
 
-PROMPT_PROCESS_RE = re.compile(
-    r'prompt processing.*n_tokens\s*=\s*(\d+).*t\s*=\s*([\d.]+)\s+s\s*/\s*([\d.]+)\s+tokens\s+per\s+second'
+# "id  3 | task 18 | prompt processing, n_tokens =   2048, progress = 0.02, t = ..."
+SLOT_PP_PROGRESS_RE = re.compile(
+    r'id\s+(\d+)\s*\|.*?prompt processing,\s*n_tokens\s*=\s*(\d+)'
+    r',\s*progress\s*=\s*([\d.]+).*?/\s*([\d.]+)\s+tokens\s+per\s+second'
+)
+
+# "id  3 | task 18 | created context checkpoint 1 of 128 (pos_min=..., n_tokens = 4096, ...)"
+SLOT_CHECKPOINT_RE = re.compile(
+    r'id\s+(\d+)\s*\|.*?created context checkpoint[^(]*\([^)]*n_tokens\s*=\s*(\d+)'
+)
+
+# "id  3 | task 18 | processing task, is_child = 0"
+SLOT_TASK_START_RE = re.compile(
+    r'launch_slot_.*?id\s+(\d+)\s*\|.*?task\s+(\d+)'
+)
+
+GEN_PROGRESS_RE = re.compile(
+    r'n_decoded\s*=\s*(\d+),\s*tg\s*=\s*([\d.]+)\s+t/s'
 )
 
 LOADING_RE = re.compile(r'loading model')
 MODEL_LOADED_RE = re.compile(r'model loaded')
 SERVER_LISTENING_RE = re.compile(r'server is listening on\s+(.*)')
+
+# "slot   load_model: id  0 | task -1 | new slot, n_ctx = 128000"
+SLOT_LAUNCH_RE = re.compile(r'slot\s+load_model:.*\bid\s+(\d+).*\bn_ctx\s*=\s*(\d+)')
 
 
 def parse_line(line: str, metrics: LogMetrics) -> Optional[str]:
@@ -192,10 +224,37 @@ def parse_line(line: str, metrics: LogMetrics) -> Optional[str]:
         metrics.graphs_reused = int(m.group(1))
         return 'graphs'
 
-    m = CHECKPOINT_RE.search(line)
+    # Slot task-start: reset per-slot PP state so stale data doesn't linger
+    m = SLOT_TASK_START_RE.search(line)
     if m:
+        slot_id = int(m.group(1))
+        metrics.slot_ctx_tokens.pop(slot_id, None)
+        metrics.slot_ctx_checkpoint.pop(slot_id, None)
+        metrics.slot_task_started.append(slot_id)
+        return 'slot_task_start'
+
+    # Per-slot prompt-processing progress (print_timing lines)
+    m = SLOT_PP_PROGRESS_RE.search(line)
+    if m:
+        slot_id  = int(m.group(1))
+        n_tokens = int(m.group(2))
+        progress = float(m.group(3))
+        rate     = float(m.group(4))
+        metrics.slot_ctx_tokens[slot_id]   = n_tokens
+        metrics.slot_ctx_progress[slot_id] = progress
+        if rate > 0:
+            metrics.prompt_per_second = rate
+            metrics.add_prompt_rate(rate)
+        return 'slot_pp_progress'
+
+    # Per-slot checkpoint creation (create_check lines)
+    m = SLOT_CHECKPOINT_RE.search(line)
+    if m:
+        slot_id  = int(m.group(1))
+        n_tokens = int(m.group(2))
+        metrics.slot_ctx_checkpoint[slot_id] = n_tokens
         metrics.checkpoints_created += 1
-        return 'checkpoint'
+        return 'slot_checkpoint'
 
     m = PROMPT_CACHE_RE.search(line)
     if m:
@@ -205,13 +264,18 @@ def parse_line(line: str, metrics: LogMetrics) -> Optional[str]:
             metrics.cache_limit_mib = float(m.group(3))
         return 'cache'
 
-    m = PROMPT_PROCESS_RE.search(line)
+    m = GEN_PROGRESS_RE.search(line)
     if m:
-        tokens = int(m.group(1))
-        time_s = float(m.group(2))
-        rate = float(m.group(3))
-        if rate > 0:
-            metrics.add_prompt_rate(rate)
-        return 'prompt_process'
+        metrics.gen_per_second = float(m.group(2))
+        metrics.add_gen_rate(metrics.gen_per_second)
+        return 'gen_progress'
+
+    m = SLOT_LAUNCH_RE.search(line)
+    if m:
+        slot_id = int(m.group(1))
+        n_ctx   = int(m.group(2))
+        if n_ctx > 0:
+            metrics.slot_n_ctx[slot_id] = n_ctx
+        return 'slot_launch'
 
     return None

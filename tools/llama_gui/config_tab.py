@@ -127,10 +127,14 @@ class ConfigTab(ttk.Frame):
 
     def _build_sections(self, parent):
         all_opts = dict(iter_options())
+        self._section_panes = {}   # title -> (pane, flat_keys_set)
 
         for sec_idx, (section_title, keys) in enumerate(SECTIONS):
             pane = CollapsiblePane(parent, section_title, expanded=True)
             pane.grid(row=sec_idx + 2, column=0, sticky='ew', padx=6, pady=4)
+
+            flat_keys = self._flatten_keys(keys)
+            self._section_panes[section_title] = (pane, flat_keys)
 
             if keys == '__speculative__':
                 self._build_speculative_section(pane, all_opts)
@@ -162,6 +166,32 @@ class ConfigTab(ttk.Frame):
                     inner_row += 1
 
             parent.columnconfigure(0, weight=1)
+
+    @staticmethod
+    def _flatten_keys(keys):
+        """Return the flat set of option keys from a section's key list."""
+        if keys == '__speculative__':
+            return set()   # speculative: never auto-collapse
+        result = set()
+        for item in keys:
+            if isinstance(item, tuple):
+                _, sub_keys = item
+                result.update(sub_keys)
+            else:
+                result.add(item)
+        return result
+
+    def _collapse_empty_sections(self):
+        """Collapse sections whose options are all unset; expand those with data."""
+        opts_set = set(self._collect_options().keys())
+        for title, (pane, flat_keys) in self._section_panes.items():
+            if not flat_keys:
+                continue   # skip speculative — managed by its own toggle
+            has_data = bool(flat_keys & opts_set)
+            if has_data:
+                pane.expand()
+            else:
+                pane.collapse()
 
     # (type_name_prefix_match, title, [option_keys])
     _SPEC_TYPE_PANELS = [
@@ -395,6 +425,7 @@ class ConfigTab(ttk.Frame):
             opts = self._profile_mgr.load(name)
             if opts:
                 self._apply_options(opts)
+        self._collapse_empty_sections()
         self._dirty = False
         self._btn_delete.configure(state='disabled' if name == 'Default' else 'normal')
         self._refresh()
