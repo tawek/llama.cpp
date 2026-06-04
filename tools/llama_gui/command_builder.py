@@ -6,6 +6,7 @@ PREFIX_MAP = {
     'model': '-m', 'lora': '--lora', 'lora_scaled': '--lora-scaled',
     'mmproj': '--mmproj', 'image': '--image', 'audio': '--audio',
     'mlock': '--mlock', 'mmap': '--mmap', 'direct_io': '--direct-io',
+    'no_mmproj': '--no-mmproj', 'no_mmproj_offload': '--no-mmproj-offload',
     'check_tensors': '--check-tensors', 'tags': '--tags',
     'alias': '--alias', 'override_kv': '--override-kv',
     'lora_init_without_apply': '--lora-init-without-apply',

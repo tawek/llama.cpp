@@ -17,7 +17,8 @@ from profile_mgr import ProfileManager
 # Sub-panels: ('Sub Title', ['key1', 'key2', ...])
 SECTIONS = [
     ('Model Loading', [
-        'model', 'lora', 'lora_scaled', 'mmproj', 'image', 'audio',
+        'model', 'lora', 'lora_scaled', 'mmproj', 'no_mmproj',
+        'no_mmproj_offload', 'image', 'audio',
         'mlock', 'mmap', 'direct_io', 'check_tensors',
         'tags', 'alias', 'override_kv', 'lora_init_without_apply']),
     ('GPU & Acceleration', [
