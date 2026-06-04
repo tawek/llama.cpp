@@ -55,6 +55,115 @@ class _FileSelector(ttk.Frame):
                 self._on_select(path)
 
 
+class _OrderedListSelector(ttk.Frame):
+    """Dual-list selector for ordered comma-separated values."""
+
+    def __init__(self, parent, items=None, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._all_items = list(items) if items else []
+        self._value = tk.StringVar(value='')
+        self._build_ui()
+
+    def _build_ui(self):
+        # Available list
+        left = ttk.Frame(self)
+        left.pack(side='left', fill='both', expand=True)
+        ttk.Label(left, text='Available:', font=('', 8)).pack(anchor='w')
+        self._avail_list = tk.Listbox(left, height=6, width=16,
+                                       font=('Consolas', 8))
+        self._avail_list.pack(fill='both', expand=True)
+        for item in self._all_items:
+            self._avail_list.insert('end', item)
+
+        # Middle buttons
+        mid = ttk.Frame(self)
+        mid.pack(side='left', fill='y', padx=4)
+        ttk.Button(mid, text='>>', width=3,
+                    command=self._add_selected).pack(pady=(20, 2))
+        ttk.Button(mid, text='<<', width=3,
+                    command=self._remove_selected).pack(pady=2)
+
+        # Selected list
+        right = ttk.Frame(self)
+        right.pack(side='left', fill='both', expand=True)
+        ttk.Label(right, text='Selected (priority):', font=('', 8)).pack(anchor='w')
+        self._sel_list = tk.Listbox(right, height=6, width=16,
+                                     font=('Consolas', 8))
+        self._sel_list.pack(fill='both', expand=True)
+
+        # Up/Down buttons below selected
+        btnf = ttk.Frame(right)
+        btnf.pack(fill='x', pady=(2, 0))
+        ttk.Button(btnf, text='Up', width=4,
+                    command=self._move_up).pack(side='left', padx=1)
+        ttk.Button(btnf, text='Down', width=4,
+                    command=self._move_down).pack(side='left', padx=1)
+
+    def _sync_value(self):
+        items = [self._sel_list.get(i) for i in range(self._sel_list.size())]
+        self._value.set(','.join(items))
+
+    def _add_selected(self):
+        sel = self._avail_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        item = self._avail_list.get(idx)
+        self._avail_list.delete(idx)
+        self._sel_list.insert('end', item)
+        self._sync_value()
+
+    def _remove_selected(self):
+        sel = self._sel_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        item = self._sel_list.get(idx)
+        self._sel_list.delete(idx)
+        # Reinsert into available in sorted order
+        for i, avail in enumerate(self._all_items):
+            if item == avail:
+                self._avail_list.insert(i, item)
+                break
+        self._sync_value()
+
+    def _move_up(self):
+        sel = self._sel_list.curselection()
+        if not sel or sel[0] == 0:
+            return
+        idx = sel[0]
+        item = self._sel_list.get(idx)
+        self._sel_list.delete(idx)
+        self._sel_list.insert(idx - 1, item)
+        self._sel_list.selection_set(idx - 1)
+        self._sync_value()
+
+    def _move_down(self):
+        sel = self._sel_list.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if idx >= self._sel_list.size() - 1:
+            return
+        item = self._sel_list.get(idx)
+        self._sel_list.delete(idx)
+        self._sel_list.insert(idx + 1, item)
+        self._sel_list.selection_set(idx + 1)
+        self._sync_value()
+
+    def set_items(self, items_str):
+        items = [i.strip() for i in items_str.split(',') if i.strip()]
+        self._avail_list.delete(0, 'end')
+        self._sel_list.delete(0, 'end')
+        selected_set = set(items)
+        for item in self._all_items:
+            if item in selected_set:
+                self._sel_list.insert('end', item)
+            else:
+                self._avail_list.insert('end', item)
+        self._sync_value()
+
+
 class OptionWidget:
     """Creates and manages a control widget (no label)."""
 
@@ -97,10 +206,15 @@ class OptionWidget:
                 rb.pack(side='left', padx=(0, 8))
             self.widget = f
 
+        elif self.widget_type == 'ordered_list_of_options':
+            self.widget = _OrderedListSelector(self.parent,
+                                                items=self.choices)
+            self._var = self.widget._value
+
         elif self.widget_type in ('spin', 'float_spin'):
             self._var = tk.StringVar(value='')
             self.widget = tk.Entry(self.parent,
-                                   textvariable=self._var, width=14)
+                                    textvariable=self._var, width=14)
 
         elif self.widget_type == 'text':
             self._var = tk.StringVar(value='')
@@ -134,6 +248,9 @@ class OptionWidget:
         if self.widget_type == 'multiline_text':
             raw = self._text_widget.get('1.0', 'end-1c').strip()
             return raw if raw else None
+        if self.widget_type == 'ordered_list_of_options':
+            raw = self._var.get().strip()
+            return raw if raw else None
         if self.widget_type == 'spin':
             raw = self._var.get().strip()
             return int(raw) if raw else None
@@ -161,6 +278,8 @@ class OptionWidget:
             self._text_widget.delete('1.0', 'end')
             if value is not None and value != '':
                 self._text_widget.insert('1.0', str(value))
+        elif self.widget_type == 'ordered_list_of_options':
+            self.widget.set_items(str(value) if value is not None else '')
         elif self.widget_type in ('spin', 'float_spin'):
             if value is not None and value != '':
                 self._var.set(str(value))
