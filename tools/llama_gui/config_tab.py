@@ -2,6 +2,7 @@
 Configuration tab - uses CollapsiblePane for sections with label:value(?) rows.
 """
 
+import os
 import tkinter as tk
 from tkinter import ttk
 
@@ -88,6 +89,7 @@ class ConfigTab(ttk.Frame):
         self._option_map = {}
         self._profile_mgr = ProfileManager()
         self._current_profile = 'Default'
+        self._server_bin_var = tk.StringVar(value='llama-server')
         self._build_ui()
 
     def _build_ui(self):
@@ -160,7 +162,7 @@ class ConfigTab(ttk.Frame):
         parent_frame = (sub_pane.content_frame if sub_pane
                         else pane.content_frame)
         opt = OptionWidget(parent_frame, wtype, default, choices,
-                           main_window=self._main_window)
+                           main_window=self._main_window, option_key=key)
         self._option_map[key] = opt
         target = sub_pane if sub_pane else pane
         show_default = str(default) if default != '' and default is not None else None
@@ -227,6 +229,14 @@ class ConfigTab(ttk.Frame):
         ttk.Separator(parent, orient='horizontal').grid(row=1, column=0,
                           sticky='ew', padx=8, pady=(6, 2))
 
+        # Server binary path
+        bf = ttk.Frame(parent)
+        bf.grid(row=2, column=0, sticky='ew', padx=8, pady=(2, 4))
+        ttk.Label(bf, text='llama-server:').pack(side='left')
+        ttk.Entry(bf, textvariable=self._server_bin_var, width=30).pack(
+            side='left', fill='x', expand=True, padx=4)
+        ttk.Button(bf, text='...', command=self._browse_server_bin).pack(side='left')
+
     def _refresh_profile_list(self):
         names = self._profile_mgr.list_profiles()
         all_names = ['Default'] + names
@@ -238,15 +248,36 @@ class ConfigTab(ttk.Frame):
             self._current_profile = 'Default'
         self._btn_delete.configure(state='disabled' if self._current_profile == 'Default' else 'normal')
 
+    def _browse_server_bin(self):
+        from tkinter import filedialog
+        if os.name == 'nt':
+            path = filedialog.askopenfilename(
+                title='Select llama-server executable',
+                filetypes=[('Executable files', '*.exe'), ('All files', '*.*')],
+                master=self._main_window)
+        else:
+            path = filedialog.askopenfilename(
+                title='Select llama-server executable',
+                filetypes=[('All files', '*.*')],
+                master=self._main_window)
+        if path:
+            self._server_bin_var.set(path)
+
     def _collect_options(self):
         result = {}
         for key, opt in self._option_map.items():
             val = opt.get_value()
             if val is not None and val != '':
                 result[key] = str(val)
+        bin_path = self._server_bin_var.get().strip()
+        if bin_path and bin_path != 'llama-server':
+            result['_server_bin'] = bin_path
         return result
 
     def _apply_options(self, options):
+        bin_path = options.pop('_server_bin', None)
+        if bin_path:
+            self._server_bin_var.set(bin_path)
         for key, val in options.items():
             opt = self._option_map.get(key)
             if opt:

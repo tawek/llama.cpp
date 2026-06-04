@@ -6,22 +6,49 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 
 
+# Per-option file type filter presets
+# None = directory dialog, empty list = all files only
+_FILE_FILTERS = {
+    'model': [('GGUF files', '*.gguf'), ('All files', '*.*')],
+    'spec_draft_model': [('GGUF files', '*.gguf'), ('All files', '*.*')],
+    'mmproj': [('GGUF files', '*.gguf'), ('All files', '*.*')],
+    'lora': [('GGUF files', '*.gguf'), ('All files', '*.*')],
+    'image': [('Image files', '*.png *.jpg *.jpeg *.bmp *.tiff *.webp'), ('All files', '*.*')],
+    'audio': [('Audio files', '*.wav *.mp3 *.ogg *.flac *.m4a'), ('All files', '*.*')],
+    'grammar_file': [('Grammar files', '*.gbnf'), ('Text files', '*.txt'), ('All files', '*.*')],
+    'json_schema_file': [('JSON files', '*.json'), ('All files', '*.*')],
+    'file': [('Text files', '*.txt'), ('All files', '*.*')],
+    'in_file': [('Text files', '*.txt'), ('All files', '*.*')],
+    'chat_template_file': [('Jinja files', '*.jinja'), ('Text files', '*.txt'), ('All files', '*.*')],
+    'ssl_key': [('PEM files', '*.pem'), ('Key files', '*.key'), ('All files', '*.*')],
+    'ssl_cert': [('PEM files', '*.pem'), ('Cert files', '*.crt'), ('All files', '*.*')],
+    'slot_save_path': None,  # directory dialog
+}
+
+
 class _FileSelector(ttk.Frame):
     """File selector with browse button."""
 
-    def __init__(self, parent, main_window, **kwargs):
+    def __init__(self, parent, main_window, filetypes=None, is_dir=False, **kwargs):
         super().__init__(parent, **kwargs)
         self.path = tk.StringVar()
         self._main_window = main_window
+        self._filetypes = filetypes if filetypes else [('All files', '*.*')]
+        self._is_dir = is_dir
         ttk.Entry(self, textvariable=self.path, width=30).pack(
             side='left', fill='x', expand=True)
         ttk.Button(self, text='...', command=self._browse).pack(side='right')
 
     def _browse(self):
-        path = filedialog.askopenfilename(
-            title='Select file',
-            filetypes=[('All files', '*.*'), ('GGUF files', '*.gguf')],
-            master=self._main_window)
+        if self._is_dir:
+            path = filedialog.askdirectory(
+                title='Select directory',
+                master=self._main_window)
+        else:
+            path = filedialog.askopenfilename(
+                title='Select file',
+                filetypes=self._filetypes,
+                master=self._main_window)
         if path:
             self.path.set(path)
             if hasattr(self, '_on_select'):
@@ -32,18 +59,23 @@ class OptionWidget:
     """Creates and manages a control widget (no label)."""
 
     def __init__(self, parent, widget_type, default, choices=None,
-                 main_window=None):
+                 main_window=None, option_key=None):
         self.parent = parent
         self.widget_type = widget_type
         self.default = default
         self.choices = choices
         self._var = None
         self.widget = None
+        self._option_key = option_key or ''
         self._create(main_window)
 
     def _create(self, main_window):
-        if self.widget_type == 'file':
-            self.widget = _FileSelector(self.parent, main_window)
+        if self.widget_type in ('file', 'directory'):
+            ft = _FILE_FILTERS.get(self._option_key)
+            is_dir = ft is None and self._option_key in _FILE_FILTERS
+            self.widget = _FileSelector(self.parent, main_window,
+                                        filetypes=ft if not is_dir else None,
+                                        is_dir=is_dir)
             self.widget._on_select = lambda p: None
 
         elif self.widget_type == 'dropdown':

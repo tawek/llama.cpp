@@ -148,6 +148,20 @@ class MainWindow:
                                     'Please configure at least the model path.')
             return
 
+        # Substitute custom binary path if set
+        bin_path = getattr(self.config_tab, '_server_bin_var', None)
+        if bin_path:
+            custom = bin_path.get().strip()
+            if custom and custom != 'llama-server':
+                parts = self._command.split(' ', 1)
+                rest = parts[1] if len(parts) > 1 else ''
+                self._command = f'{custom} {rest}'
+
+        if not self._command.strip():
+            messagebox.showwarning('No Command',
+                                    'Please configure at least the model path.')
+            return
+
         self._status_label.config(text='Starting server...')
         self._lbl_server_status.config(text='Server: Starting...', foreground='orange')
 
