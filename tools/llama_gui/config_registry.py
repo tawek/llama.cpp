@@ -235,10 +235,12 @@ _OPTIONS = {
                 'BNF-like grammar to constrain generation.'),
     'grammar_file': ('Grammar File', '', 'file', None, None,
                      'File containing a BNF grammar.'),
+    'grammar': ('Grammar', '', 'multiline_text', None, None,
+                'BNF-like grammar to constrain generation.'),
     'json_schema': ('JSON Schema', '', 'multiline_text', None, None,
                     'JSON schema to constrain generation.'),
     'json_schema_file': ('JSON Schema File', '', 'file', None, None,
-                         'File containing a JSON schema.'),
+                          'File containing a JSON schema.'),
     # === SPECULATIVE ===
     'spec_draft_model': ('Draft Model', '', 'file', None, None,
                          'Draft model for speculative decoding.'),
