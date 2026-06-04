@@ -46,3 +46,21 @@ class ProfileManager:
         path = os.path.join(self._dir, f'{name}.json')
         if os.path.exists(path):
             os.remove(path)
+
+    def rename(self, old_name, new_name):
+        old_path = os.path.join(self._dir, f'{old_name}.json')
+        new_path = os.path.join(self._dir, f'{new_name}.json')
+        if not os.path.exists(old_path):
+            return False
+        if os.path.exists(new_path):
+            return False
+        data = self.load(old_name)
+        if data is None:
+            return False
+        data['name'] = new_name
+        tmp = new_path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, new_path)
+        os.remove(old_path)
+        return True
