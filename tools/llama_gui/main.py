@@ -161,6 +161,26 @@ class MainWindow:
                 except OSError as e:
                     self.logs_tab.add_log_line(f'Warning: could not create {path}: {e}')
 
+    def _update_api_url(self):
+        """Sync api.base_url with the host/port currently configured."""
+        opts = self.config_tab.get_options()
+
+        host_opt = opts.get('host')
+        port_opt = opts.get('port')
+
+        host = host_opt.get_value() if host_opt else None
+        port = port_opt.get_value() if port_opt else None
+
+        host = str(host).strip() if host else '127.0.0.1'
+        port = str(port).strip() if port else '8080'
+
+        # Bind-all addresses: connect to loopback for health checks
+        if host in ('0.0.0.0', '::'):
+            host = '127.0.0.1'
+
+        self.api.base_url = f'http://{host}:{port}'
+        self.logs_tab.add_log_line(f'Health check target: {self.api.base_url}')
+
     def _start_server(self):
         """Start the llama-server process."""
         self._command = self.config_tab.get_command()
@@ -170,6 +190,7 @@ class MainWindow:
                                     'Please configure at least the model path.')
             return
 
+        self._update_api_url()
         self._ensure_directories()
         self.logs_tab.add_log_line(f'Invoking: {self._command}')
         self._status_label.config(text='Starting server...')
