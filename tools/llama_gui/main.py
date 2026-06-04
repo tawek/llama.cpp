@@ -90,9 +90,13 @@ class MainWindow:
         self._lbl_server_status.pack(side='left', padx=4)
 
         self._btn_open_browser = ttk.Button(toolbar, text='Open in Browser',
-                                             command=self._open_browser,
-                                             state='disabled')
+                                              command=self._open_browser,
+                                              state='disabled')
         self._btn_open_browser.pack(side='left', padx=4)
+
+        ttk.Separator(toolbar, orient='vertical').pack(side='left', fill='y', padx=8)
+        ttk.Button(toolbar, text='Settings',
+                    command=self._show_settings).pack(side='left', padx=2)
 
     def _build_tabs(self):
         self._notebook = ttk.Notebook(self.root)
@@ -147,6 +151,7 @@ class MainWindow:
                                     'Please configure at least the model path.')
             return
 
+        self.logs_tab.add_log_line(f'Invoking: {self._command}')
         self._status_label.config(text='Starting server...')
         self._lbl_server_status.config(text='Server: Starting...', foreground='orange')
 
@@ -168,6 +173,7 @@ class MainWindow:
         self.monitor_tab._start_monitoring()
 
         # Schedule health check after server starts
+        self._health_check_timeout = 120
         self._health_check_attempts = 0
         self._poll_health()
 
@@ -186,7 +192,7 @@ class MainWindow:
             pass
 
         self._health_check_attempts += 1
-        if self._health_check_attempts >= 15:
+        if self._health_check_attempts >= self._health_check_timeout:
             self._on_server_health_failed()
             return
 
@@ -204,7 +210,7 @@ class MainWindow:
         self._status_label.config(text='Server failed to start or connect')
         self._lbl_server_status.config(text='Server: Failed', foreground='red')
         messagebox.showerror('Server Error',
-                              'Server did not become healthy within 15 seconds.\n'
+                              f'Server did not become healthy within {self._health_check_timeout} seconds.\n'
                               'Check the Logs tab for details.')
 
     def _on_process_stopped(self):
@@ -242,6 +248,69 @@ class MainWindow:
         import webbrowser
         webbrowser.open(self.api.base_url)
 
+    def _show_settings(self):
+        """Show the Settings dialog."""
+        from tkinter import filedialog
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Settings')
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        pad = {'padx': 8, 'pady': 4}
+
+        # Server binary
+        ttk.Label(dlg, text='Server binary:').grid(
+            row=0, column=0, sticky='w', **pad)
+        bin_var = tk.StringVar(
+            value=self.config_tab._server_bin_var.get())
+        bin_entry = ttk.Entry(dlg, textvariable=bin_var, width=42)
+        bin_entry.grid(row=0, column=1, sticky='ew', **pad)
+
+        def _browse_bin():
+            path = filedialog.askopenfilename(
+                title='Select llama-server executable',
+                filetypes=[('All files', '*')],
+                master=dlg)
+            if path:
+                bin_var.set(path)
+
+        ttk.Button(dlg, text='...', command=_browse_bin).grid(
+            row=0, column=2, padx=(0, 8), pady=4)
+
+        # Health check timeout
+        ttk.Label(dlg, text='Startup timeout (s):').grid(
+            row=1, column=0, sticky='w', **pad)
+        timeout_var = tk.StringVar(value=str(self._health_check_timeout))
+        ttk.Spinbox(dlg, from_=10, to=600, increment=10,
+                     textvariable=timeout_var, width=8).grid(
+            row=1, column=1, sticky='w', **pad)
+
+        ttk.Separator(dlg, orient='horizontal').grid(
+            row=2, column=0, columnspan=3, sticky='ew', pady=6)
+
+        # Buttons
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.grid(row=3, column=0, columnspan=3, pady=(0, 8))
+
+        def _ok():
+            self.config_tab._server_bin_var.set(bin_var.get())
+            try:
+                self._health_check_timeout = max(10, int(timeout_var.get()))
+            except ValueError:
+                pass
+            self.save_preferences()
+            dlg.destroy()
+
+        ttk.Button(btn_frame, text='OK', command=_ok, width=10).pack(
+            side='left', padx=4)
+        ttk.Button(btn_frame, text='Cancel', command=dlg.destroy,
+                    width=10).pack(side='left', padx=4)
+
+        dlg.columnconfigure(1, weight=1)
+        dlg.wait_window()
+
     def _on_log_line(self, line):
         """Handle incoming log line from server process."""
         # Update logs tab
@@ -276,6 +345,11 @@ class MainWindow:
                     prefs = json.load(f)
                 if 'refresh_ms' in prefs:
                     self.monitor_tab._refresh_var.set(str(prefs['refresh_ms']))
+                if 'health_timeout' in prefs:
+                    self._health_check_timeout = int(prefs['health_timeout'])
+                server_bin = prefs.get('server_bin', '')
+                if server_bin and hasattr(self.config_tab, '_server_bin_var'):
+                    self.config_tab._server_bin_var.set(server_bin)
                 last_profile = prefs.get('last_profile', '')
                 if last_profile and hasattr(self.config_tab, '_current_profile'):
                     self.config_tab._current_profile = last_profile
@@ -285,6 +359,7 @@ class MainWindow:
                         opts = self.config_tab._profile_mgr.load(last_profile)
                         if opts:
                             self.config_tab._apply_options(opts)
+                self.config_tab._dirty = False
             except Exception:
                 pass
 
@@ -296,6 +371,8 @@ class MainWindow:
             import json
             prefs = {
                 'refresh_ms': self.monitor_tab._refresh_ms,
+                'health_timeout': self._health_check_timeout,
+                'server_bin': self.config_tab._server_bin_var.get(),
                 'last_profile': getattr(self.config_tab, '_current_profile', ''),
             }
             with open(pref_path, 'w') as f:
@@ -311,6 +388,8 @@ class MainWindow:
 
     def _on_closing(self):
         """Handle window close."""
+        if not self.config_tab.on_close_request():
+            return
         if self.process.is_running:
             if messagebox.askyesno('Quit', 'Server is running. Stop and quit?'):
                 self._stop_server()
