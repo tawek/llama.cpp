@@ -105,7 +105,18 @@ class OptionWidget:
         elif self.widget_type == 'text':
             self._var = tk.StringVar(value='')
             self.widget = tk.Entry(self.parent,
-                                   textvariable=self._var, width=28)
+                                    textvariable=self._var, width=28)
+
+        elif self.widget_type == 'multiline_text':
+            f = ttk.Frame(self.parent)
+            self._text_widget = tk.Text(f, height=4, wrap='word',
+                                         font=('Consolas', 9))
+            sc = ttk.Scrollbar(f, orient='vertical',
+                                command=self._text_widget.yview)
+            self._text_widget.configure(yscrollcommand=sc.set)
+            self._text_widget.pack(side='left', fill='both', expand=True)
+            sc.pack(side='right', fill='y')
+            self.widget = f
 
     def get_value(self):
         if self.widget_type == 'file':
@@ -119,6 +130,9 @@ class OptionWidget:
             return self.widget.get()
         if self.widget_type == 'text':
             raw = self._var.get().strip()
+            return raw if raw else None
+        if self.widget_type == 'multiline_text':
+            raw = self._text_widget.get('1.0', 'end-1c').strip()
             return raw if raw else None
         if self.widget_type == 'spin':
             raw = self._var.get().strip()
@@ -143,6 +157,10 @@ class OptionWidget:
                 self.widget.set('')
         elif self.widget_type in ('text',):
             self._var.set(str(value) if value is not None else '')
+        elif self.widget_type == 'multiline_text':
+            self._text_widget.delete('1.0', 'end')
+            if value is not None and value != '':
+                self._text_widget.insert('1.0', str(value))
         elif self.widget_type in ('spin', 'float_spin'):
             if value is not None and value != '':
                 self._var.set(str(value))

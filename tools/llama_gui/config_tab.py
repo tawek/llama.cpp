@@ -193,6 +193,9 @@ class ConfigTab(ttk.Frame):
             if hasattr(opt, '_var') and opt._var is not None:
                 opt._var.trace_add('write',
                     lambda *_, k=key: self._refresh())
+            elif opt.widget_type == 'multiline_text':
+                opt._text_widget.bind('<KeyRelease>',
+                    lambda *_, k=key: self._refresh())
 
     def _build_full_command(self):
         cmd = build_command(self._option_map)

@@ -259,9 +259,9 @@ _OPTIONS = {
     'spec_draft_ngl': ('Draft NGL', 0, 'spin', (0, 100, 1), None,
                        'GPU layers for draft model.'),
     # === PROMPT ===
-    'prompt': ('Prompt', '', 'text', None, None,
+    'prompt': ('Prompt', '', 'multiline_text', None, None,
                'Prompt text to start generation.'),
-    'system_prompt': ('System Prompt', '', 'text', None, None,
+    'system_prompt': ('System Prompt', '', 'multiline_text', None, None,
                       'System prompt for chat templates.'),
     'file': ('File (-f)', '', 'file', None, None,
              'File containing the prompt.'),
