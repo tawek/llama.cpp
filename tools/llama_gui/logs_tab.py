@@ -15,7 +15,8 @@ class LogsTab(ttk.Frame):
         super().__init__(parent)
         self._main_window = main_window
         self._metrics = LogMetrics()
-        self._filter_level = 'all'
+        self._log_lines = []  # [(level, text), ...]
+        self._max_lines = 10000
         self._build_ui()
 
     def _build_ui(self):
@@ -29,10 +30,12 @@ class LogsTab(ttk.Frame):
         filter_frame.pack(side='left', padx=4)
 
         for label, value in [('All', 'all'), ('Info', 'info'),
-                              ('Warn', 'warn'), ('Error', 'error')]:
-            ttk.Radiobutton(filter_frame, text=label,
-                           variable=self._filter_var,
-                           value=value).pack(side='left', padx=2)
+                               ('Warn', 'warn'), ('Error', 'error')]:
+            rb = ttk.Radiobutton(filter_frame, text=label,
+                                 variable=self._filter_var,
+                                 value=value)
+            rb.pack(side='left', padx=2)
+        self._filter_var.trace_add('write', lambda *_: self._reapply_filter())
 
         ttk.Button(ctrl_frame, text='Clear', command=self._clear_logs).pack(side='right', padx=2)
         ttk.Button(ctrl_frame, text='Save Log', command=self._save_log).pack(side='right')
@@ -64,34 +67,49 @@ class LogsTab(ttk.Frame):
 
     def add_log_line(self, line):
         """Add a line to the log display."""
+        import time
+        level = self._detect_level(line)
+        timestamp = time.strftime('%H:%M:%S')
+        self._log_lines.append((level, timestamp, line))
+
+        # Trim stored lines
+        if len(self._log_lines) > self._max_lines:
+            self._log_lines = self._log_lines[self._max_lines // 2:]
+
         self._log_text.configure(state='normal')
 
-        # Apply filter
-        level = self._detect_level(line)
-        if self._filter_var.get() != 'all' and level != self._filter_var.get():
-            self._log_text.configure(state='disabled')
-            return
+        cur_filter = self._filter_var.get()
+        if cur_filter == 'all' or level == cur_filter:
+            display_line = f'[{timestamp}] {line}\n'
+            self._log_text.insert(tk.END, display_line)
 
-        # Add timestamp
-        import time
-        timestamp = time.strftime('%H:%M:%S')
-        display_line = f'[{timestamp}] {line}\n'
-        self._log_text.insert(tk.END, display_line)
+            # Trim widget lines
+            line_count = int(self._log_text.index('end-1c').split('.')[0])
+            if line_count > self._max_lines:
+                self._log_text.delete('1.0', f'{self._max_lines // 2}.0')
 
-        # Parse metrics
+            self._log_text.see(tk.END)
+
+        self._log_text.configure(state='disabled')
+
+        # Parse metrics (regardless of filter)
         event = parse_line(line, self._metrics)
         if event:
             self._update_stats()
 
-        # Auto-scroll
+    def _reapply_filter(self):
+        """Rebuild log display from stored lines based on current filter."""
+        self._log_text.configure(state='normal')
+        self._log_text.delete('1.0', tk.END)
+
+        cur_filter = self._filter_var.get()
+        for level, timestamp, text in self._log_lines:
+            if cur_filter != 'all' and level != cur_filter:
+                continue
+            self._log_text.insert(tk.END, f'[{timestamp}] {text}\n')
+
         self._log_text.see(tk.END)
         self._log_text.configure(state='disabled')
-
-        # Limit lines to prevent memory issues
-        max_lines = 10000
-        line_count = int(self._log_text.index('end-1c').split('.')[0])
-        if line_count > max_lines:
-            self._log_text.delete('1.0', f'{max_lines // 2}.0')
 
     def _detect_level(self, line):
         """Detect log level from line content."""
@@ -124,6 +142,7 @@ class LogsTab(ttk.Frame):
         self._log_text.configure(state='normal')
         self._log_text.delete('1.0', tk.END)
         self._log_text.configure(state='disabled')
+        self._log_lines.clear()
         self._metrics = LogMetrics()
         self._stats_label.config(text='Cleared')
 
