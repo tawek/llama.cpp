@@ -45,6 +45,9 @@ class MainWindow:
         self.process.on_stdout(self._on_log_line)
         self.process.on_stopped(self._on_process_stopped)
 
+        # Start background system monitor (needed for CPU delta calculation)
+        self.sys_monitor.start(interval=2.0)
+
         # Load saved preferences
         self._load_preferences()
 
