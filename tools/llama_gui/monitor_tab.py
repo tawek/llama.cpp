@@ -95,8 +95,7 @@ class MonitorTab(ttk.Frame):
         self._btn_start.config(state='disabled')
         self._btn_stop.config(state='normal')
         self._refresh_ms = int(self._refresh_var.get())
-        self._poll_once()
-        self._schedule_next()
+        self._poll_once()  # _poll_once calls _schedule_next itself
 
     def _stop_monitoring(self):
         self._btn_start.config(state='normal')
@@ -113,9 +112,21 @@ class MonitorTab(ttk.Frame):
             self.after_cancel(self._after_id)
             self._after_id = None
 
-        self._fetch_server_metrics()
-        self._fetch_slots()
-        self._fetch_system_stats()
+        try:
+            self._fetch_server_metrics()
+        except Exception as e:
+            print(f'monitor: fetch_server_metrics error: {e}')
+
+        try:
+            self._fetch_slots()
+        except Exception as e:
+            print(f'monitor: fetch_slots error: {e}')
+
+        try:
+            self._fetch_system_stats()
+        except Exception as e:
+            print(f'monitor: fetch_system_stats error: {e}')
+
         self._schedule_next()
 
     def _fetch_server_metrics(self):
