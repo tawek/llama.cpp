@@ -47,6 +47,20 @@ class MonitorTab(ttk.Frame):
                                       foreground='gray')
         self._lbl_status.pack(fill='x', pady=1)
 
+        ttk.Separator(sm_frame, orient='horizontal').pack(fill='x', pady=(4, 2))
+        ttk.Label(sm_frame, text='Session averages:',
+                  font=('', 8), foreground='gray').pack(fill='x')
+        self._lbl_avg_prompt = ttk.Label(sm_frame, text='Avg Prompt: --')
+        self._lbl_avg_prompt.pack(fill='x', pady=1)
+        self._lbl_avg_gen = ttk.Label(sm_frame, text='Avg Gen: --')
+        self._lbl_avg_gen.pack(fill='x', pady=1)
+        self._lbl_avg_draft = ttk.Label(sm_frame, text='Avg Draft: --')
+        self._lbl_avg_draft.pack(fill='x', pady=1)
+        self._lbl_checkpoints = ttk.Label(sm_frame, text='Checkpoints: --')
+        self._lbl_checkpoints.pack(fill='x', pady=1)
+        self._lbl_cache = ttk.Label(sm_frame, text='Cache: --')
+        self._lbl_cache.pack(fill='x', pady=1)
+
         # ── Slots ─────────────────────────────────────────────────────────
         slots_frame = ttk.LabelFrame(self, text='Slots', padding=(8, 4))
         slots_frame.pack(side='left', fill='both', expand=True, padx=4, pady=4)
@@ -289,6 +303,7 @@ class MonitorTab(ttk.Frame):
     # ── Called from main.py log parser ───────────────────────────────────
 
     def update_from_log(self, metrics):
+        """Update instant metrics from a single parsed log event."""
         if not metrics:
             return
         self._lbl_prompt_tps.config(
@@ -301,6 +316,19 @@ class MonitorTab(ttk.Frame):
             text=f'KV Cache: {metrics.get("cache_size_mib", 0):.1f} MiB')
         self._lbl_graphs.config(
             text=f'Graphs: {metrics.get("graphs_reused", 0)} reused')
+
+    def update_from_metrics(self, metrics):
+        """Update session-average stats from a LogMetrics object."""
+        self._lbl_avg_prompt.config(
+            text=f'Avg Prompt: {metrics.avg_prompt_per_second:.1f} tok/s')
+        self._lbl_avg_gen.config(
+            text=f'Avg Gen: {metrics.avg_gen_per_second:.1f} tok/s')
+        self._lbl_avg_draft.config(
+            text=f'Avg Draft: {metrics.avg_draft_acceptance * 100:.1f}%')
+        self._lbl_checkpoints.config(
+            text=f'Checkpoints: {metrics.checkpoints_created}')
+        self._lbl_cache.config(
+            text=f'Cache: {metrics.cache_size_mib:.1f} / {metrics.cache_limit_mib:.1f} MiB')
 
     def stop(self):
         self._stop_monitoring()

@@ -41,9 +41,12 @@ class MainWindow:
         # Setup UI
         self._build_ui()
 
-        # Connect callbacks
-        self.process.on_stdout(self._on_log_line)
-        self.process.on_stopped(self._on_process_stopped)
+        # Connect callbacks — use after(0) to marshal onto the main thread,
+        # since _read_stream runs in a background thread.
+        self.process.on_stdout(
+            lambda line: self.root.after(0, self._on_log_line, line))
+        self.process.on_stopped(
+            lambda: self.root.after(0, self._on_process_stopped))
 
         # Start background system monitor (needed for CPU delta calculation)
         self.sys_monitor.start(interval=2.0)
@@ -119,6 +122,7 @@ class MainWindow:
 
         # Connect dependencies
         self.monitor_tab.set_dependencies(self.api, self.sys_monitor, self.process)
+        self.logs_tab._on_metrics_update = self.monitor_tab.update_from_metrics
 
     def _build_statusbar(self):
         self._statusbar = ttk.Frame(self.root)
@@ -368,22 +372,9 @@ class MainWindow:
         dlg.wait_window()
 
     def _on_log_line(self, line):
-        """Handle incoming log line from server process."""
-        # Update logs tab
+        """Handle incoming log line from server process.
+        Always called on the main thread via root.after(0, ...)."""
         self.logs_tab.add_log_line(line)
-
-        # Update monitor with parsed metrics
-        from log_parser import parse_line, LogMetrics
-        temp_metrics = LogMetrics()
-        event = parse_line(line, temp_metrics)
-        if event in ('prompt_eval', 'eval', 'draft', 'cache', 'graphs'):
-            self.monitor_tab.update_from_log({
-                'prompt_per_second': temp_metrics.prompt_per_second,
-                'gen_per_second': temp_metrics.gen_per_second,
-                'draft_acceptance_rate': temp_metrics.draft_acceptance_rate,
-                'cache_size_mib': temp_metrics.cache_size_mib,
-                'graphs_reused': temp_metrics.graphs_reused,
-            })
 
         # Detect server ready
         if 'server is listening' in line.lower():

@@ -15,8 +15,9 @@ class LogsTab(ttk.Frame):
         super().__init__(parent)
         self._main_window = main_window
         self._metrics = LogMetrics()
-        self._log_lines = []  # [(level, text), ...]
+        self._log_lines = []  # [(level, timestamp, text), ...]
         self._max_lines = 10000
+        self._on_metrics_update = None   # optional callback(LogMetrics)
         self._build_ui()
 
     def _build_ui(self):
@@ -57,14 +58,6 @@ class LogsTab(ttk.Frame):
         h_scroll.pack(side='bottom', fill='x')
         v_scroll.pack(side='right', fill='y')
 
-        # Stats bar
-        stats_frame = ttk.Frame(self)
-        stats_frame.pack(fill='x', padx=4, pady=2)
-
-        self._stats_label = ttk.Label(stats_frame, text='No logs yet',
-                                       relief='sunken', anchor='w')
-        self._stats_label.pack(fill='x')
-
     def add_log_line(self, line):
         """Add a line to the log display."""
         import time
@@ -95,7 +88,8 @@ class LogsTab(ttk.Frame):
         # Parse metrics (regardless of filter)
         event = parse_line(line, self._metrics)
         if event:
-            self._update_stats()
+            if self._on_metrics_update:
+                self._on_metrics_update(self._metrics)
 
     def _reapply_filter(self):
         """Rebuild log display from stored lines based on current filter."""
@@ -122,21 +116,6 @@ class LogsTab(ttk.Frame):
             return 'info'
         return 'info'
 
-    def _update_stats(self):
-        """Update statistics display."""
-        avg_prompt = self._metrics.avg_prompt_per_second
-        avg_gen = self._metrics.avg_gen_per_second
-        avg_draft = self._metrics.avg_draft_acceptance
-
-        parts = [
-            f'Avg Prompt: {avg_prompt:.1f} tok/s',
-            f'Avg Gen: {avg_gen:.1f} tok/s',
-            f'Draft: {avg_draft * 100:.1f}%',
-            f'Checkpoints: {self._metrics.checkpoints_created}',
-            f'Cache: {self._metrics.cache_size_mib:.1f} MiB',
-        ]
-        self._stats_label.config(text=' | '.join(parts))
-
     def _clear_logs(self):
         """Clear all logs and reset metrics."""
         self._log_text.configure(state='normal')
@@ -144,7 +123,8 @@ class LogsTab(ttk.Frame):
         self._log_text.configure(state='disabled')
         self._log_lines.clear()
         self._metrics = LogMetrics()
-        self._stats_label.config(text='Cleared')
+        if self._on_metrics_update:
+            self._on_metrics_update(self._metrics)
 
     def _save_log(self):
         """Save logs to file."""
@@ -158,8 +138,3 @@ class LogsTab(ttk.Frame):
             content = self._log_text.get('1.0', tk.END)
             with open(path, 'w') as f:
                 f.write(content)
-
-    def set_metrics(self, metrics):
-        """Set metrics from external parser."""
-        self._metrics = metrics
-        self._update_stats()

@@ -86,7 +86,8 @@ class ServerAPI:
 
 
 def parse_prometheus_metrics(text: str) -> Dict[str, float]:
-    """Parse Prometheus-style metrics text into a dict."""
+    """Parse Prometheus-style metrics text into a dict.
+    Strips the 'llamacpp:' prefix used by llama-server."""
     metrics = {}
     if not text:
         return metrics
@@ -99,6 +100,9 @@ def parse_prometheus_metrics(text: str) -> Dict[str, float]:
         parts = line.split(' ')
         if len(parts) >= 2:
             name = parts[0]
+            # Strip the llamacpp: namespace prefix
+            if name.startswith('llamacpp:'):
+                name = name[len('llamacpp:'):]
             try:
                 value = float(parts[1])
                 metrics[name] = value
