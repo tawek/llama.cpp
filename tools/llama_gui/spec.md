@@ -45,12 +45,28 @@ All options from `common/arg.cpp` and `tools/server/server.cpp`.
 | bool (flag) | `checkbox` | 3-state Combobox `['', 'on', 'off']` | `--mlock`, `--mmap`/`--no-mmap` |
 | int | `spin` | tk.Entry (StringVar, starts empty) | `-t 4` (threads) |
 | float | `float_spin` | tk.Entry (StringVar, starts empty) | `--temperature 0.8` |
-| string (path) | `file` | ttk.Entry + Browse button | `-m model.gguf` |
+| string (path) | `file` | ttk.Entry + Browse button (per-key filters) | `-m model.gguf` |
+| string (directory) | `directory` | ttk.Entry + Browse button (folder dialog) | `--slot-save-path /path/to/cache` |
 | string (enum) | `dropdown` | ttk.Combobox (state='readonly') | `--rope-scaling {none,linear,yarn}` |
 | string (enum, shortlist) | `radio` | ttk.Radiobutton row | `--mirostat {0,1,2}` |
 | string (comma-sep) | `text` | tk.Entry (StringVar) | `-ts 0.5,0.3,0.2` |
 | string (free) | `text` | tk.Entry (StringVar) | `--prompt "hello"` |
 | string (key=value) | `text` | tk.Entry (StringVar) | `--override-kv KEY=TYPE:VALUE` |
+
+File picker filters by option key:
+
+| Key | Dialog Type | Filters |
+|-----|-------------|---------|
+| `model`, `spec_draft_model`, `mmproj`, `lora` | file | `*.gguf` |
+| `image` | file | `*.png *.jpg *.jpeg *.bmp *.tiff *.webp` |
+| `audio` | file | `*.wav *.mp3 *.ogg *.flac *.m4a` |
+| `grammar_file` | file | `*.gbnf`, `*.txt` |
+| `json_schema_file` | file | `*.json` |
+| `ssl_key` | file | `*.pem`, `*.key` |
+| `ssl_cert` | file | `*.pem`, `*.crt` |
+| `chat_template_file` | file | `*.jinja`, `*.txt` |
+| `file` (prompt), `in_file` | file | `*.txt` |
+| `slot_save_path` | **directory** | folder picker |
 
 ### 2.3 Defaults Reference
 
@@ -191,7 +207,11 @@ All options from `common/arg.cpp` and `tools/server/server.cpp`.
 
 ### 5.2 Config Tab
 
-A scrollable canvas (tk.Canvas + ttk.Scrollbar, mouse-wheel bound) containing **18 collapsible sections** (CollapsiblePane widgets) plus a **Command Preview** frame at bottom.
+A scrollable canvas (tk.Canvas + ttk.Scrollbar, mouse-wheel bound) containing:
+- **Profile toolbar** at top (row 0) — profile dropdown, Save/Save As/Delete buttons
+- **llama-server binary path** row (row 2) — Entry + Browse button (default: `llama-server` on PATH)
+- **18 collapsible sections** (CollapsiblePane widgets)
+- **Command Preview** frame at bottom
 
 Each section is a `CollapsiblePane` (extends `ttk.LabelFrame`) with:
 - **⬟ arrow** (▾ expanded / ▸ collapsed) + **bold title** — both clickable
@@ -389,11 +409,20 @@ Profiles provide named presets of all configuration option values, persisted acr
 | **Delete** | File removed from disk; dropdown selects `"Default"` |
 | **Auto-restore** | Last active profile name saved in `preferences.json`; restored on launch |
 
-### 7.5 Implementation
+### 7.5 llama-server Binary Path
+
+A dedicated row below the profile toolbar lets users set a custom path to the `llama-server` executable (default: `llama-server`, resolved from `$PATH`).
+
+- **Widget**: `ttk.Entry` + Browse button (file dialog, shows `*.exe` on Windows)
+- **Storage**: Saved in the profile's `options` dict under the special key `_server_bin`
+- **Usage**: When starting, `main.py` substitutes the binary path into the built command by replacing the `llama-server` prefix
+- **Scope**: Per-profile — each profile can reference a different binary (e.g. debug vs release builds)
+
+### 7.6 Implementation
 
 - `profile_mgr.py` — `ProfileManager` class: `list_profiles()`, `load(name)`, `save(name, options)`, `delete(name)`, `default_options()`
-- `config_tab.py` — profile toolbar with Combobox + buttons, wired to `ConfigTab._load_profile()` / `_save_profile()`
-- `main.py` — `save_preferences()` extended to include `last_profile`; `_load_preferences()` restores it
+- `config_tab.py` — profile toolbar with Combobox + buttons, server binary path row, wired to `_collect_options()` / `_apply_options()`
+- `main.py` — `save_preferences()` extended to include `last_profile`; `_load_preferences()` restores it; binary substitution in `_start_server()`
 - `widget_factory.py` — add `set_value(value)` method to `OptionWidget` for profile loading
 
 ---
