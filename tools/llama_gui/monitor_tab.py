@@ -114,6 +114,8 @@ class MonitorTab(ttk.Frame):
 
         self._lbl_temp = ttk.Label(sys_frame, text='Temp: --°C')
         self._lbl_temp.pack(fill='x', pady=1)
+        self._bar_temp = ttk.Progressbar(sys_frame, maximum=100, length=160)
+        self._bar_temp.pack(fill='x', pady=(0, 4))
 
     # ── Monitoring control ────────────────────────────────────────────────
 
@@ -270,15 +272,19 @@ class MonitorTab(ttk.Frame):
             self._lbl_vram.config(text='VRAM: N/A')
             self._bar_vram['value'] = 0
             self._lbl_temp.config(text='Temp: N/A')
+            self._bar_temp['value'] = 0
         else:
             gpct = gpu.get('percent', 0)
             gu, gt = gpu.get('used', 0), gpu.get('total', 0)
             vpct  = gu / gt * 100 if gt > 0 else 0
+            temp  = gpu.get('temp', 0)
+            tpct  = min(temp / 90.0 * 100, 100)
             self._lbl_gpu.config(text=f'GPU:  {gpct:.0f}%')
             self._bar_gpu['value'] = gpct
             self._lbl_vram.config(text=f'VRAM: {gu:.0f} / {gt:.0f} MiB')
             self._bar_vram['value'] = vpct
-            self._lbl_temp.config(text=f'Temp: {gpu.get("temp", 0)}°C')
+            self._lbl_temp.config(text=f'Temp: {temp}°C')
+            self._bar_temp['value'] = tpct
 
     # ── Called from main.py log parser ───────────────────────────────────
 
