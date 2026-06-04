@@ -16,7 +16,7 @@ PREFIX_MAP = {
     'fit': '--fit', 'fit_print': '--fit-print',
     'fit_target': '--fit-target', 'fit_ctx': '--fit-ctx',
     'cache_prompt': '--cache-prompt', 'cache_reuse': '--cache-reuse',
-    'cache_ram': '--cache-ram', 'cache_type_k': '--cache-type-k',
+    'cache_ram': '--cache-ram',     'cache_type_k': '--cache-type-k',
     'cache_type_v': '--cache-type-v', 'kv_unified': '--kv-unified',
     'cache_idle_slots': '--cache-idle-slots',
     'slot_save_path': '--slot-save-path',
@@ -60,6 +60,36 @@ PREFIX_MAP = {
     'spec_draft_p_min': '--spec-draft-p-min',
     'spec_draft_device': '--spec-draft-device',
     'spec_draft_ngl': '--spec-draft-ngl',
+    'spec_draft_hf': '--spec-draft-hf',
+    'spec_draft_threads': '--spec-draft-threads',
+    'spec_draft_threads_batch': '--spec-draft-threads-batch',
+    'spec_draft_cpu_mask': '--spec-draft-cpu-mask',
+    'spec_draft_cpu_range': '--spec-draft-cpu-range',
+    'spec_draft_cpu_strict': '--spec-draft-cpu-strict',
+    'spec_draft_prio': '--spec-draft-prio',
+    'spec_draft_poll': '--spec-draft-poll',
+    'spec_draft_type_k': '--spec-draft-type-k',
+    'spec_draft_type_v': '--spec-draft-type-v',
+    'spec_draft_cpu_moe': '--spec-draft-cpu-moe',
+    'spec_draft_n_cpu_moe': '--spec-draft-n-cpu-moe',
+    'spec_draft_override_tensor': '--spec-draft-override-tensor',
+    'ngram_min': '--ngram-min',
+    'ngram_max': '--ngram-max',
+    'ngram_no_alloc': '--ngram-no-alloc',
+    'lookup_cache_static': '--lookup-cache-static',
+    'lookup_cache_dynamic': '--lookup-cache-dynamic',
+    'spec_ngram_simple_min_hits': '--spec-ngram-simple-min-hits',
+    'spec_ngram_simple_size_n': '--spec-ngram-simple-size-n',
+    'spec_ngram_simple_size_m': '--spec-ngram-simple-size-m',
+    'spec_ngram_map_k_min_hits': '--spec-ngram-map-k-min-hits',
+    'spec_ngram_map_k_size_n': '--spec-ngram-map-k-size-n',
+    'spec_ngram_map_k_size_m': '--spec-ngram-map-k-size-m',
+    'spec_ngram_map_k4v_min_hits': '--spec-ngram-map-k4v-min-hits',
+    'spec_ngram_map_k4v_size_n': '--spec-ngram-map-k4v-size-n',
+    'spec_ngram_map_k4v_size_m': '--spec-ngram-map-k4v-size-m',
+    'spec_ngram_mod_n_match': '--spec-ngram-mod-n-match',
+    'spec_ngram_mod_n_max': '--spec-ngram-mod-n-max',
+    'spec_ngram_mod_n_min': '--spec-ngram-mod-n-min',
     'prompt': '-p', 'system_prompt': '-sys', 'file': '-f',
     'in_file': '--in-file', 'binary_file': '-bf',
     'reverse_prompt': '-r', 'escape': '-e', 'special': '-sp',
@@ -103,6 +133,111 @@ PREFIX_MAP = {
     'direct_io_no': '--no-direct-io',
     'webui_no': '--no-webui',
 }
+
+# Reverse map: CLI flag → config key (built from PREFIX_MAP)
+REVERSE_PREFIX_MAP = {}
+for _key, _flag in PREFIX_MAP.items():
+    REVERSE_PREFIX_MAP[_flag] = _key
+
+# Additional short-form aliases not stored as separate PREFIX_MAP entries
+_SHORT_ALIASES = {
+    '-ctk': 'cache_type_k',
+    '-ctv': 'cache_type_v',
+    '-fitt': 'fit_target',
+}
+REVERSE_PREFIX_MAP.update(_SHORT_ALIASES)
+
+# Keys whose widget type is checkbox (boolean flags with no value argument)
+_BOOLEAN_KEYS = {
+    'no_mmproj', 'no_mmproj_offload', 'mlock', 'mmap', 'direct_io',
+    'check_tensors', 'cpu_moe', 'cpu_strict', 'kv_unified',
+    'ignore_eos', 'escape', 'special', 'interactive',
+    'interactive_first', 'multiline_input', 'simple_io',
+    'show_timings', 'display_prompt', 'color', 'jinja',
+    'prefill_assistant', 'verbose_prompt', 'warmup', 'perf',
+    'cache_prompt', 'cache_reuse', 'cache_idle_slots',
+    'ctx_checkpoints', 'swa_full', 'ngram_no_alloc',
+    'tools', 'embedding', 'rerank', 'metrics', 'props', 'slots',
+    'cont_batching', 'webui', 'no_mmap',
+    'fit', 'fit_print',
+}
+
+
+def parse_cli_line(line):
+    """
+    Parse a llama-server CLI command string into a dict of config key → value.
+    Handles quoted values and joined continuation lines.
+    Returns dict of {config_key: str_value}.
+    """
+    tokens = _tokenize(line)
+    if not tokens:
+        return {}
+
+    try:
+        start = next(i for i, t in enumerate(tokens)
+                     if 'llama-server' in t or 'llama-cli' in t)
+        args = tokens[start + 1:]
+    except StopIteration:
+        return {}
+
+    result = {}
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if not token.startswith('-'):
+            i += 1
+            continue
+
+        flag = token
+        key = REVERSE_PREFIX_MAP.get(flag)
+
+        if key is None and not flag.startswith('--'):
+            long_form = '--' + flag.lstrip('-')
+            key = REVERSE_PREFIX_MAP.get(long_form)
+
+        if key is None:
+            i += 1
+            continue
+
+        # Handle --flag=value syntax
+        if '=' in flag.lstrip('-'):
+            _, val = flag.split('=', 1)
+            result[key] = _strip_quotes(val)
+            i += 1
+            continue
+
+        # Negated flag (key ends with _no) → set base key to 'off'
+        if key.endswith('_no'):
+            result[key[:-3]] = 'off'
+            i += 1
+            continue
+
+        # Check if next token is a value (doesn't start with -)
+        i += 1
+        if i < len(args) and not args[i].startswith('-'):
+            result[key] = _strip_quotes(args[i])
+            i += 1
+        elif key in _BOOLEAN_KEYS:
+            result[key] = 'on'
+
+    return result
+
+
+def _tokenize(line):
+    """Tokenize a shell command line, handling quoted strings."""
+    import shlex
+    try:
+        return shlex.split(line)
+    except ValueError:
+        return line.split()
+
+
+def _strip_quotes(s):
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        return s[1:-1]
+    return s
+
 
 # Keys that are known to have no negated variant
 _NO_NEGATED = {'mlock', 'check_tensors', 'cpu_moe', 'cpu_strict',
