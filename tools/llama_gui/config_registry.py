@@ -235,7 +235,7 @@ _OPTIONS = {
                 'BNF-like grammar to constrain generation.'),
     'grammar_file': ('Grammar File', '', 'file', None, None,
                      'File containing a BNF grammar.'),
-    'json_schema': ('JSON Schema', '', 'text', None, None,
+    'json_schema': ('JSON Schema', '', 'multiline_text', None, None,
                     'JSON schema to constrain generation.'),
     'json_schema_file': ('JSON Schema File', '', 'file', None, None,
                          'File containing a JSON schema.'),
