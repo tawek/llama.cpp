@@ -1,0 +1,250 @@
+"""
+Main entry point for llama.cpp GUI launcher.
+Wires together config, monitor, logs tabs and process management.
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+import sys
+import os
+
+# Add current directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from config_tab import ConfigTab
+from monitor_tab import MonitorTab
+from logs_tab import LogsTab
+from api_client import ServerAPI
+from process_mgr import ServerProcess
+from system_monitor import SystemMonitor
+
+
+class MainWindow:
+    """Main application window."""
+
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title('llama.cpp GUI Launcher')
+        self.root.geometry('1100x700')
+        self._configure_fonts()
+
+        # Shared components
+        self.process = ServerProcess()
+        self.sys_monitor = SystemMonitor()
+        self.api = ServerAPI()
+
+        # State
+        self._command = ''
+        self._monitoring = False
+
+        # Setup UI
+        self._build_ui()
+
+        # Connect log callback
+        self.process.on_stdout(self._on_log_line)
+
+        # Load saved preferences
+        self._load_preferences()
+
+    def _configure_fonts(self):
+        import tkinter.font as font
+        f = font.nametofont('TkDefaultFont')
+        f.configure(family='Segoe UI', size=9)
+        f = font.nametofont('TkTextFont')
+        f.configure(family='Segoe UI', size=9)
+        f = font.nametofont('TkFixedFont')
+        f.configure(family='Consolas', size=9)
+
+    def _build_ui(self):
+        # Top toolbar
+        self._build_toolbar()
+
+        # Tab control
+        self._build_tabs()
+
+        # Bottom status bar
+        self._build_statusbar()
+
+    def _build_toolbar(self):
+        toolbar = ttk.Frame(self.root)
+        toolbar.pack(fill='x', padx=4, pady=4)
+
+        self._btn_start = ttk.Button(toolbar, text='Start',
+                                      command=self._start_server)
+        self._btn_start.pack(side='left', padx=2)
+
+        self._btn_stop = ttk.Button(toolbar, text='Stop', state='disabled',
+                                     command=self._stop_server)
+        self._btn_stop.pack(side='left', padx=2)
+
+        self._btn_restart = ttk.Button(toolbar, text='Restart', state='disabled',
+                                        command=self._restart_server)
+        self._btn_restart.pack(side='left', padx=2)
+
+        ttk.Separator(toolbar, orient='vertical').pack(side='left', fill='y', padx=8)
+
+        self._lbl_server_status = ttk.Label(toolbar, text='Server: Not started',
+                                             foreground='gray')
+        self._lbl_server_status.pack(side='left', padx=4)
+
+        self._btn_open_browser = ttk.Button(toolbar, text='Open in Browser',
+                                             command=self._open_browser,
+                                             state='disabled')
+        self._btn_open_browser.pack(side='left', padx=4)
+
+    def _build_tabs(self):
+        self._notebook = ttk.Notebook(self.root)
+        self._notebook.pack(fill='both', expand=True, padx=4, pady=4)
+
+        # Config tab
+        self.config_tab = ConfigTab(self._notebook, self.root)
+        self._notebook.add(self.config_tab, text='Config')
+
+        # Monitor tab
+        self.monitor_tab = MonitorTab(self._notebook, self.root)
+        self._notebook.add(self.monitor_tab, text='Monitor')
+
+        # Logs tab
+        self.logs_tab = LogsTab(self._notebook, self.root)
+        self._notebook.add(self.logs_tab, text='Logs')
+
+        # Connect dependencies
+        self.monitor_tab.set_dependencies(self.api, self.sys_monitor, self.process)
+
+    def _build_statusbar(self):
+        self._statusbar = ttk.Frame(self.root)
+        self._statusbar.pack(fill='x', side='bottom')
+
+        self._status_label = ttk.Label(self._statusbar, text='Ready',
+                                        relief='sunken', anchor='w')
+        self._status_label.pack(fill='x', expand=True, padx=2, pady=2)
+
+    def set_command(self, command):
+        """Set the server command from config tab."""
+        self._command = command
+
+    def _start_server(self):
+        """Start the llama-server process."""
+        if not self._command:
+            self._command = self.config_tab.get_command()
+
+        if not self._command.strip():
+            messagebox.showwarning('No Command',
+                                    'Please configure at least the model path.')
+            return
+
+        self._status_label.config(text='Starting server...')
+        success = self.process.start(self._command)
+
+        if success:
+            self._btn_start.config(state='disabled')
+            self._btn_stop.config(state='normal')
+            self._btn_restart.config(state='normal')
+            self._monitoring = True
+            self.monitor_tab._start_monitoring()
+            self._status_label.config(text='Server starting...')
+        else:
+            messagebox.showerror('Error', 'Failed to start server.')
+
+    def _stop_server(self):
+        """Stop the llama-server process."""
+        self.process.stop()
+        self._monitoring = False
+        self.monitor_tab._stop_monitoring()
+
+        self._btn_start.config(state='normal')
+        self._btn_stop.config(state='disabled')
+        self._btn_restart.config(state='disabled')
+        self._btn_open_browser.config(state='disabled')
+        self._lbl_server_status.config(text='Server: Not started',
+                                        foreground='gray')
+        self._status_label.config(text='Server stopped')
+
+    def _restart_server(self):
+        """Restart the server with current command."""
+        self._stop_server()
+        self.root.after(500, self._start_server)
+
+    def _open_browser(self):
+        """Open server URL in default browser."""
+        import webbrowser
+        url = self._lbl_server_status.cget('text').split(': ')[-1]
+        webbrowser.open(url)
+
+    def _on_log_line(self, line):
+        """Handle incoming log line from server process."""
+        # Update logs tab
+        self.logs_tab.add_log_line(line)
+
+        # Update monitor with parsed metrics
+        from log_parser import parse_line, LogMetrics
+        temp_metrics = LogMetrics()
+        event = parse_line(line, temp_metrics)
+        if event in ('prompt_eval', 'eval', 'draft', 'cache', 'graphs'):
+            self.monitor_tab.update_from_log({
+                'prompt_per_second': temp_metrics.prompt_per_second,
+                'gen_per_second': temp_metrics.gen_per_second,
+                'draft_acceptance_rate': temp_metrics.draft_acceptance_rate,
+                'cache_size_mib': temp_metrics.cache_size_mib,
+                'graphs_reused': temp_metrics.graphs_reused,
+            })
+
+        # Detect server ready
+        if 'server is listening' in line.lower():
+            url = line.split('server is listening')[-1].strip()
+            self._lbl_server_status.config(text=f'Server: {url}', foreground='green')
+            self._btn_open_browser.config(state='normal')
+
+    def _load_preferences(self):
+        """Load saved preferences from file."""
+        pref_path = os.path.expanduser('~/.llama-gui/preferences.json')
+        if os.path.exists(pref_path):
+            try:
+                import json
+                with open(pref_path) as f:
+                    prefs = json.load(f)
+                # Restore refresh interval if saved
+                if 'refresh_ms' in prefs:
+                    self.monitor_tab._refresh_var.set(str(prefs['refresh_ms']))
+            except Exception:
+                pass
+
+    def save_preferences(self):
+        """Save current preferences."""
+        pref_path = os.path.expanduser('~/.llama-gui/preferences.json')
+        os.makedirs(os.path.dirname(pref_path), exist_ok=True)
+        try:
+            import json
+            prefs = {
+                'refresh_ms': self.monitor_tab._refresh_ms
+            }
+            with open(pref_path, 'w') as f:
+                json.dump(prefs, f)
+        except Exception:
+            pass
+
+    def run(self):
+        """Start the main event loop."""
+        # Clean shutdown on exit
+        self.root.protocol('WM_DELETE_WINDOW', self._on_closing)
+        self.root.mainloop()
+
+    def _on_closing(self):
+        """Handle window close."""
+        if self.process.is_running:
+            if messagebox.askyesno('Quit', 'Server is running. Stop and quit?'):
+                self._stop_server()
+                self.save_preferences()
+                self.root.destroy()
+        else:
+            self.save_preferences()
+            self.root.destroy()
+
+
+def main():
+    app = MainWindow()
+    app.run()
+
+
+if __name__ == '__main__':
+    main()
