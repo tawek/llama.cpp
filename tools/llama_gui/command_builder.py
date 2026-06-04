@@ -154,6 +154,6 @@ def build_command(option_map):
 def update_preview(cmd, text_widget):
     """Update a Text widget with the current command preview."""
     text_widget.configure(state='normal')
-    text_widget.delete('1.0', tk.END)
+    text_widget.delete('1.0', 'end')
     text_widget.insert('1.0', cmd)
     text_widget.configure(state='disabled')
