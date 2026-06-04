@@ -328,17 +328,29 @@ class MainWindow:
                      textvariable=timeout_var, width=8).grid(
             row=1, column=1, sticky='w', **pad)
 
+        # Monitor refresh interval
+        ttk.Label(dlg, text='Monitor refresh (ms):').grid(
+            row=2, column=0, sticky='w', **pad)
+        refresh_var = tk.StringVar(value=str(self.monitor_tab._refresh_ms))
+        ttk.Spinbox(dlg, from_=500, to=10000, increment=500,
+                     textvariable=refresh_var, width=8).grid(
+            row=2, column=1, sticky='w', **pad)
+
         ttk.Separator(dlg, orient='horizontal').grid(
-            row=2, column=0, columnspan=3, sticky='ew', pady=6)
+            row=3, column=0, columnspan=3, sticky='ew', pady=6)
 
         # Buttons
         btn_frame = ttk.Frame(dlg)
-        btn_frame.grid(row=3, column=0, columnspan=3, pady=(0, 8))
+        btn_frame.grid(row=4, column=0, columnspan=3, pady=(0, 8))
 
         def _ok():
             self.config_tab._server_bin_var.set(bin_var.get())
             try:
                 self._health_check_timeout = max(10, int(timeout_var.get()))
+            except ValueError:
+                pass
+            try:
+                self.monitor_tab._refresh_ms = max(500, int(refresh_var.get()))
             except ValueError:
                 pass
             self.save_preferences()
@@ -385,7 +397,7 @@ class MainWindow:
                 with open(pref_path) as f:
                     prefs = json.load(f)
                 if 'refresh_ms' in prefs:
-                    self.monitor_tab._refresh_var.set(str(prefs['refresh_ms']))
+                    self.monitor_tab._refresh_ms = int(prefs['refresh_ms'])
                 if 'health_timeout' in prefs:
                     self._health_check_timeout = int(prefs['health_timeout'])
                 server_bin = prefs.get('server_bin', '')
