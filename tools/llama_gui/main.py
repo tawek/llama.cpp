@@ -142,6 +142,25 @@ class MainWindow:
         self._lbl_server_status.config(text='Server: Not started',
                                         foreground='gray')
 
+    def _ensure_directories(self):
+        """Create any directories required by the current command before launch."""
+        opts = self.config_tab.get_options()
+        dir_keys = ('slot_save_path',)
+        for key in dir_keys:
+            opt = opts.get(key)
+            if opt is None:
+                continue
+            val = opt.get_value()
+            if not val:
+                continue
+            path = os.path.expanduser(str(val))
+            if not os.path.exists(path):
+                try:
+                    os.makedirs(path, exist_ok=True)
+                    self.logs_tab.add_log_line(f'Created directory: {path}')
+                except OSError as e:
+                    self.logs_tab.add_log_line(f'Warning: could not create {path}: {e}')
+
     def _start_server(self):
         """Start the llama-server process."""
         self._command = self.config_tab.get_command()
@@ -151,6 +170,7 @@ class MainWindow:
                                     'Please configure at least the model path.')
             return
 
+        self._ensure_directories()
         self.logs_tab.add_log_line(f'Invoking: {self._command}')
         self._status_label.config(text='Starting server...')
         self._lbl_server_status.config(text='Server: Starting...', foreground='orange')
