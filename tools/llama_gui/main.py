@@ -140,22 +140,7 @@ class MainWindow:
 
     def _start_server(self):
         """Start the llama-server process."""
-        if not self._command:
-            self._command = self.config_tab.get_command()
-
-        if not self._command.strip():
-            messagebox.showwarning('No Command',
-                                    'Please configure at least the model path.')
-            return
-
-        # Substitute custom binary path if set
-        bin_path = getattr(self.config_tab, '_server_bin_var', None)
-        if bin_path:
-            custom = bin_path.get().strip()
-            if custom and custom != 'llama-server':
-                parts = self._command.split(' ', 1)
-                rest = parts[1] if len(parts) > 1 else ''
-                self._command = f'{custom} {rest}'
+        self._command = self.config_tab.get_command()
 
         if not self._command.strip():
             messagebox.showwarning('No Command',

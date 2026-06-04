@@ -117,7 +117,9 @@ class ConfigTab(ttk.Frame):
         canvas.bind_all('<Button-4>', _b4)
         canvas.bind_all('<Button-5>', _b5)
 
+        self._build_binary_row(scroll_frame)
         self._build_profile_bar(scroll_frame)
+        self._build_server_note(scroll_frame)
         self._build_sections(scroll_frame)
         self._build_preview(scroll_frame)
         self._bind_updates()
@@ -128,7 +130,7 @@ class ConfigTab(ttk.Frame):
 
         for sec_idx, (section_title, keys) in enumerate(SECTIONS):
             pane = CollapsiblePane(parent, section_title, expanded=True)
-            pane.grid(row=sec_idx + 2, column=0, sticky='ew', padx=6, pady=4)
+            pane.grid(row=sec_idx + 4, column=0, sticky='ew', padx=6, pady=4)
 
             inner_row = 0
             for item in keys:
@@ -170,7 +172,7 @@ class ConfigTab(ttk.Frame):
 
     def _build_preview(self, parent):
         pf = ttk.LabelFrame(parent, text='Command Preview')
-        pf.grid(row=len(SECTIONS) + 2, column=0, sticky='ew',
+        pf.grid(row=len(SECTIONS) + 4, column=0, sticky='ew',
                 padx=8, pady=(8, 8))
 
         self._cmd_preview = tk.Text(pf, height=4, wrap='word',
@@ -192,25 +194,52 @@ class ConfigTab(ttk.Frame):
                 opt._var.trace_add('write',
                     lambda *_, k=key: self._refresh())
 
-    def _refresh(self):
+    def _build_full_command(self):
         cmd = build_command(self._option_map)
+        bin_path = self._server_bin_var.get().strip()
+        if bin_path and bin_path != 'llama-server':
+            parts = cmd.split(' ', 1)
+            rest = parts[1] if len(parts) > 1 else ''
+            cmd = f'{bin_path} {rest}'
+        return cmd
+
+    def _refresh(self):
+        cmd = self._build_full_command()
         update_preview(cmd, self._cmd_preview)
 
     def _copy_command(self):
-        cmd = build_command(self._option_map)
+        cmd = self._build_full_command()
         if self._main_window:
             self._main_window.clipboard_clear()
             self._main_window.clipboard_append(cmd)
             self._main_window.update()
 
     def _use_command(self):
-        cmd = build_command(self._option_map)
+        cmd = self._build_full_command()
         if self._main_window and hasattr(self._main_window, 'set_command'):
             self._main_window.set_command(cmd)
 
+    def get_command(self):
+        return self._build_full_command()
+
+    def get_options(self):
+        return self._option_map
+
+    def _build_binary_row(self, parent):
+        bf = ttk.Frame(parent)
+        bf.grid(row=0, column=0, sticky='ew', padx=8, pady=(6, 2))
+        parent.columnconfigure(0, weight=1)
+        ttk.Label(bf, text='Server binary:', font=('', 9, 'bold')).pack(side='left')
+        ttk.Entry(bf, textvariable=self._server_bin_var, width=35).pack(
+            side='left', fill='x', expand=True, padx=4)
+        ttk.Button(bf, text='...', command=self._browse_server_bin).pack(side='left')
+        self._server_bin_var.trace_add('write', lambda *_: self._refresh())
+        ttk.Separator(parent, orient='horizontal').grid(
+            row=1, column=0, sticky='ew', padx=8, pady=(2, 4))
+
     def _build_profile_bar(self, parent):
         pf = ttk.Frame(parent)
-        pf.grid(row=0, column=0, sticky='ew', padx=8, pady=(4, 0))
+        pf.grid(row=2, column=0, sticky='ew', padx=8, pady=(2, 0))
         parent.columnconfigure(0, weight=1)
 
         ttk.Label(pf, text='Profile:').pack(side='left')
@@ -226,16 +255,9 @@ class ConfigTab(ttk.Frame):
         self._btn_delete = ttk.Button(pf, text='Delete', command=self._delete_profile)
         self._btn_delete.pack(side='left', padx=1)
 
-        ttk.Separator(parent, orient='horizontal').grid(row=1, column=0,
-                          sticky='ew', padx=8, pady=(6, 2))
-
-        # Server binary path
-        bf = ttk.Frame(parent)
-        bf.grid(row=2, column=0, sticky='ew', padx=8, pady=(2, 4))
-        ttk.Label(bf, text='llama-server:').pack(side='left')
-        ttk.Entry(bf, textvariable=self._server_bin_var, width=30).pack(
-            side='left', fill='x', expand=True, padx=4)
-        ttk.Button(bf, text='...', command=self._browse_server_bin).pack(side='left')
+    def _build_server_note(self, parent):
+        ttk.Separator(parent, orient='horizontal').grid(
+            row=3, column=0, sticky='ew', padx=8, pady=(6, 2))
 
     def _refresh_profile_list(self):
         names = self._profile_mgr.list_profiles()
@@ -332,9 +354,3 @@ class ConfigTab(ttk.Frame):
         self._refresh_profile_list()
         self._apply_options({})
         self._refresh()
-
-    def get_command(self):
-        return build_command(self._option_map)
-
-    def get_options(self):
-        return self._option_map
