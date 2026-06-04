@@ -27,6 +27,10 @@ class LogMetrics:
     draft_accepted: int = 0
     draft_total: int = 0
 
+    # Cumulative session totals from "statistics …" lines
+    stats_draft_gen_total: int = 0
+    stats_draft_acc_total: int = 0
+
     graphs_reused: int = 0
 
     checkpoints_created: int = 0
@@ -101,6 +105,11 @@ DRAFT_RE = re.compile(
 GRAPHS_REUSED_RE = re.compile(r'graphs reused\s+=\s+(\d+)')
 
 SLOT_DRAFT_RE = re.compile(r'accepted\s+(\d+)\s*/\s*(\d+)\s+draft\s+tokens')
+
+# "statistics ngram-mod: … #gen tokens = 1632, #acc tokens = 868"
+STATS_RE = re.compile(
+    r'statistics\s+\S+:.*?#gen tokens\s*=\s*(\d+),\s*#acc tokens\s*=\s*(\d+)'
+)
 
 CHECKPOINT_RE = re.compile(
     r'created context checkpoint\s+(\d+)\s+of\s+(\d+)'
@@ -224,6 +233,12 @@ def parse_line(line: str, metrics: LogMetrics) -> Optional[str]:
         metrics.graphs_reused = int(m.group(1))
         return 'graphs'
 
+    m = STATS_RE.search(line)
+    if m:
+        metrics.stats_draft_gen_total = int(m.group(1))
+        metrics.stats_draft_acc_total = int(m.group(2))
+        return 'draft_stats'
+
     # Slot task-start: reset per-slot PP state so stale data doesn't linger
     m = SLOT_TASK_START_RE.search(line)
     if m:
@@ -255,6 +270,12 @@ def parse_line(line: str, metrics: LogMetrics) -> Optional[str]:
         metrics.slot_ctx_checkpoint[slot_id] = n_tokens
         metrics.checkpoints_created += 1
         return 'slot_checkpoint'
+
+    # Generic checkpoint counter (lines without a slot-id prefix)
+    m = CHECKPOINT_RE.search(line)
+    if m:
+        metrics.checkpoints_created += 1
+        return 'checkpoint'
 
     m = PROMPT_CACHE_RE.search(line)
     if m:

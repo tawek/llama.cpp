@@ -24,7 +24,6 @@ from log_parser import (
     SLOT_DRAFT_RE,
     CHECKPOINT_RE,
     PROMPT_CACHE_RE,
-    PROMPT_PROCESS_RE,
     LOADING_RE,
     MODEL_LOADED_RE,
     SERVER_LISTENING_RE,
@@ -74,7 +73,8 @@ class ConfigRegistryTest(unittest.TestCase):
             self.assertIsInstance(key, str)
             self.assertIsInstance(val, tuple)
             self.assertIn(val[2], ('file', 'dropdown', 'checkbox', 'radio',
-                                    'spin', 'float_spin', 'text', 'panel_header'))
+                                    'spin', 'float_spin', 'text', 'panel_header',
+                                    'multiline_text', 'ordered_list_of_options'))
             count += 1
         self.assertGreater(count, 150)
 
@@ -200,14 +200,6 @@ class LogParserPatternTest(unittest.TestCase):
         self.assertEqual(int(m.group(1)), 3)
         self.assertEqual(float(m.group(2)), 45.123)
         self.assertEqual(float(m.group(3)), 512.0)
-
-    def test_prompt_process(self):
-        line = 'prompt processing, n_tokens = 256, progress = 1.00, t = 0.12 s / 2133.33 tokens per second'
-        m = PROMPT_PROCESS_RE.search(line)
-        self.assertIsNotNone(m)
-        self.assertEqual(int(m.group(1)), 256)
-        self.assertEqual(float(m.group(2)), 0.12)
-        self.assertEqual(float(m.group(3)), 2133.33)
 
     def test_loading(self):
         self.assertTrue(LOADING_RE.search('loading model llama-2-7b.q4_0.gguf'))
@@ -395,10 +387,13 @@ class BuildCommandTest(unittest.TestCase):
         self.assertIn('-t', cmd)
         self.assertIn('8', cmd)
 
-    def test_spin_value_same_as_default(self):
+    def test_spin_value_same_as_old_default_is_emitted(self):
+        # Values are emitted regardless of what the registered default was;
+        # only None / '' means "not set".
         opt = make_option_widget(widget_type='spin', default=4, value=4)
         cmd = build_command({'threads': opt})
-        self.assertNotIn('-t', cmd)
+        self.assertIn('-t', cmd)
+        self.assertIn('4', cmd)
 
     def test_file_value(self):
         opt = make_option_widget(widget_type='file', default='', value='/path/to/model.gguf')
@@ -439,13 +434,14 @@ class BuildCommandTest(unittest.TestCase):
         self.assertIn('-sm', cmd)
         self.assertIn('layer', cmd)
 
-    def test_float_spin_with_zero_default(self):
+    def test_float_spin_zero_is_emitted(self):
+        # Explicit zero is a real value — must appear on the command line.
         opt = make_option_widget(widget_type='float_spin', default=0.0, value=0.0)
         cmd = build_command({'temperature': opt})
-        # Same as default, should not appear
-        self.assertNotIn('--temp', cmd)
+        self.assertIn('--temp', cmd)
+        self.assertIn('0.0', cmd)
 
-    def test_float_spin_with_non_default(self):
+    def test_float_spin_with_non_zero_value(self):
         opt = make_option_widget(widget_type='float_spin', default=0.0, value=0.8)
         cmd = build_command({'temperature': opt})
         self.assertIn('--temp', cmd)

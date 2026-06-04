@@ -498,12 +498,40 @@ class MainWindow:
 
         theme_combo.bind('<<ComboboxSelected>>', _preview_theme)
 
+        # Per-graph visibility — live effect via BooleanVar trace
+        chart = self.monitor_tab._chart
+        _prev_graph_vis = dict(chart._graphs_visible)   # save for Cancel
+        _graph_labels = {
+            'pp':           'PP tok/s',
+            'tg':           'TG tok/s',
+            'draft_pct':    'Draft %',
+            'draft_tokens': 'Draft tokens (gen/acc)',
+        }
+        ttk.Label(dlg, text='Graphs:').grid(
+            row=7, column=0, sticky='nw', **pad)
+        gfx_frame = ttk.Frame(dlg)
+        gfx_frame.grid(row=7, column=1, columnspan=2, sticky='w', **pad)
+        _graph_vars = {}
+        for i, (key, lbl) in enumerate(_graph_labels.items()):
+            var = tk.BooleanVar(value=chart._graphs_visible.get(key, True))
+            _graph_vars[key] = var
+
+            def _make_cb(k, v):
+                def _cb(*_):
+                    chart.set_graph_visible(k, v.get())
+                return _cb
+
+            var.trace_add('write', _make_cb(key, var))
+            ttk.Checkbutton(gfx_frame, text=lbl, variable=var,
+                            style='Switch.TCheckbutton').grid(
+                row=i // 2, column=i % 2, sticky='w', padx=(0, 12), pady=2)
+
         ttk.Separator(dlg, orient='horizontal').grid(
-            row=7, column=0, columnspan=3, sticky='ew', pady=6)
+            row=8, column=0, columnspan=3, sticky='ew', pady=6)
 
         # Buttons
         btn_frame = ttk.Frame(dlg)
-        btn_frame.grid(row=8, column=0, columnspan=3, pady=(0, 8))
+        btn_frame.grid(row=9, column=0, columnspan=3, pady=(0, 8))
 
         def _ok():
             self.config_tab._server_bin_var.set(bin_var.get())
@@ -531,11 +559,15 @@ class MainWindow:
                 pass
             # Theme already applied live; just persist the chosen value
             self._theme_mode = theme_var.get()
+            # Graph visibility already applied live via traces; nothing extra needed
             self.save_preferences()
             dlg.destroy()
 
         def _cancel():
             self.set_theme(_prev_theme)
+            # Restore graph visibility to what it was before the dialog opened
+            for key, vis in _prev_graph_vis.items():
+                chart.set_graph_visible(key, vis)
             dlg.destroy()
 
         ttk.Button(btn_frame, text='OK', command=_ok, width=10).pack(
@@ -597,6 +629,10 @@ class MainWindow:
                     self._health_check_timeout = int(prefs['health_timeout'])
                 if 'theme_mode' in prefs:
                     self.set_theme(prefs['theme_mode'])
+                for key in ('pp', 'tg', 'draft_pct', 'draft_tokens'):
+                    pkey = f'graph_vis_{key}'
+                    if pkey in prefs:
+                        self.monitor_tab._chart.set_graph_visible(key, bool(prefs[pkey]))
                 server_bin = prefs.get('server_bin', '')
                 if server_bin and hasattr(self.config_tab, '_server_bin_var'):
                     self.config_tab._server_bin_var.set(server_bin)
@@ -629,6 +665,8 @@ class MainWindow:
                 'last_profile': getattr(self.config_tab, '_current_profile', ''),
                 'theme_mode': self._theme_mode,
             }
+            for key in ('pp', 'tg', 'draft_pct', 'draft_tokens'):
+                prefs[f'graph_vis_{key}'] = self.monitor_tab._chart._graphs_visible.get(key, True)
             with open(pref_path, 'w') as f:
                 json.dump(prefs, f)
         except Exception:

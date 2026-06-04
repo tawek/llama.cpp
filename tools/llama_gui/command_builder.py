@@ -281,8 +281,7 @@ def build_command(option_map):
         elif opt.widget_type in ('dropdown', 'radio'):
             parts.extend([prefix, str(val)])
         else:
-            if val != opt.default:
-                parts.extend([prefix, str(val)])
+            parts.extend([prefix, str(val)])
 
     return ' '.join(_format_arg(p) for p in parts)
 

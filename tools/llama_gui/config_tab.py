@@ -300,10 +300,17 @@ class ConfigTab(ttk.Frame):
     def _bind_updates(self):
         for key, opt in self._option_map.items():
             if hasattr(opt, '_var') and opt._var is not None:
+                # checkbox, radio, spin, float_spin, text, ordered_list_of_options
                 opt._var.trace_add('write',
                     lambda *_, k=key: self._refresh())
             elif opt.widget_type == 'multiline_text':
                 opt._text_widget.bind('<KeyRelease>',
+                    lambda *_, k=key: self._refresh())
+            elif opt.widget_type == 'file':
+                opt.widget.path.trace_add('write',
+                    lambda *_, k=key: self._refresh())
+            elif opt.widget_type == 'dropdown':
+                opt.widget.bind('<<ComboboxSelected>>',
                     lambda *_, k=key: self._refresh())
 
     def _build_full_command(self):
@@ -396,13 +403,20 @@ class ConfigTab(ttk.Frame):
         return result
 
     def _apply_options(self, options):
-        bin_path = options.pop('_server_bin', None)
+        bin_path = options.get('_server_bin')
         if bin_path:
             self._server_bin_var.set(bin_path)
         for key, val in options.items():
+            if key == '_server_bin':
+                continue
             opt = self._option_map.get(key)
             if opt:
                 opt.set_value(val)
+
+    def _reset_all_options(self):
+        """Clear every option widget to empty (None = no value set)."""
+        for opt in self._option_map.values():
+            opt.set_value(None)
 
     def _on_profile_select(self):
         name = self._profile_var.get()
@@ -419,16 +433,23 @@ class ConfigTab(ttk.Frame):
 
     def _do_switch_profile(self, name):
         self._current_profile = name
-        if name == 'Default':
-            self._apply_options({})
-        else:
-            opts = self._profile_mgr.load(name)
-            if opts:
-                self._apply_options(opts)
-        self._collapse_empty_sections()
+        # Suppress dirty-marking for the entire reset+apply sequence so that
+        # none of the widget traces can set _dirty=True during the switch.
+        self._ready = False
+        try:
+            self._reset_all_options()
+            if name != 'Default':
+                opts = self._profile_mgr.load(name)
+                if opts:
+                    self._apply_options(opts)
+            self._collapse_empty_sections()
+        finally:
+            self._ready = True
         self._dirty = False
         self._btn_delete.configure(state='disabled' if name == 'Default' else 'normal')
-        self._refresh()
+        # Update command preview directly — calling _refresh() would set _dirty=True.
+        cmd = self._build_full_command()
+        update_preview(cmd, self._cmd_preview)
 
     def _prompt_unsaved(self):
         from tkinter import messagebox

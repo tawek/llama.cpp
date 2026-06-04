@@ -30,10 +30,16 @@ class MetricsChart(ttk.Frame):
     C_PROMPT     = '#4e9eff'
     C_GEN        = '#4ec94e'
     C_DRAFT      = '#ffaa44'
+    C_DRAFT_GEN  = '#ff8844'   # draft tokens generated line
+    C_DRAFT_ACC  = '#44cc88'   # draft tokens accepted line
     C_TEXT       = '#aaaaaa'
     C_RULE       = '#ffffff'   # vertical crosshair line
     C_HOVER_TEXT = '#ffffff'   # value label foreground
     C_HOVER_SHADOW = '#000000' # value label drop-shadow
+
+    # Panel order and height weights (higher = taller)
+    _PANEL_ORDER  = ('pp', 'tg', 'draft_pct', 'draft_tokens')
+    _PANEL_WEIGHT = {'pp': 2, 'tg': 2, 'draft_pct': 1, 'draft_tokens': 1}
 
     _PALETTE = {
         'dark': {
@@ -54,9 +60,12 @@ class MetricsChart(ttk.Frame):
         super().__init__(parent)
         self._time_window_s  = time_window_s
         self._max_points     = time_window_s * (1000 // self.TICK_MS)
-        self._prompt = []
-        self._gen    = []
-        self._draft  = []
+        self._prompt    = []
+        self._gen       = []
+        self._draft     = []   # draft acceptance %
+        self._draft_gen = []   # draft tokens generated (per request)
+        self._draft_acc = []   # draft tokens accepted (per request)
+        self._graphs_visible = {k: True for k in self._PANEL_ORDER}
         self._hover_x = None   # canvas x of last mouse position (None = no hover)
         self._canvas = tk.Canvas(self, bg=self.C_BG, highlightthickness=0)
         self._canvas.pack(fill='both', expand=True)
@@ -64,20 +73,27 @@ class MetricsChart(ttk.Frame):
         self._canvas.bind('<Motion>', self._on_hover)
         self._canvas.bind('<Leave>',  self._on_leave)
 
-    def add_point(self, prompt_tps: float, gen_tps: float, draft_pct: float):
+    def add_point(self, prompt_tps: float, gen_tps: float, draft_pct: float,
+                  draft_gen: float = 0.0, draft_acc: float = 0.0):
         self._prompt.append(max(0.0, prompt_tps))
         self._gen.append(max(0.0, gen_tps))
         self._draft.append(max(0.0, min(100.0, draft_pct)))
+        self._draft_gen.append(max(0.0, draft_gen))
+        self._draft_acc.append(max(0.0, draft_acc))
         if len(self._prompt) > self._max_points:
-            self._prompt = self._prompt[-self._max_points:]
-            self._gen    = self._gen[-self._max_points:]
-            self._draft  = self._draft[-self._max_points:]
+            self._prompt    = self._prompt[-self._max_points:]
+            self._gen       = self._gen[-self._max_points:]
+            self._draft     = self._draft[-self._max_points:]
+            self._draft_gen = self._draft_gen[-self._max_points:]
+            self._draft_acc = self._draft_acc[-self._max_points:]
         self._redraw()
 
     def clear(self):
         self._prompt.clear()
         self._gen.clear()
         self._draft.clear()
+        self._draft_gen.clear()
+        self._draft_acc.clear()
         self._redraw()
 
     def set_time_window(self, seconds: int):
@@ -85,11 +101,19 @@ class MetricsChart(ttk.Frame):
         self._time_window_s = max(10, seconds)
         new_max = self._time_window_s * (1000 // self.TICK_MS)
         if new_max < self._max_points:
-            self._prompt = self._prompt[-new_max:]
-            self._gen    = self._gen[-new_max:]
-            self._draft  = self._draft[-new_max:]
+            self._prompt    = self._prompt[-new_max:]
+            self._gen       = self._gen[-new_max:]
+            self._draft     = self._draft[-new_max:]
+            self._draft_gen = self._draft_gen[-new_max:]
+            self._draft_acc = self._draft_acc[-new_max:]
         self._max_points = new_max
         self._redraw()
+
+    def set_graph_visible(self, name: str, visible: bool):
+        """Show or hide a named graph panel and redraw immediately."""
+        if name in self._graphs_visible:
+            self._graphs_visible[name] = bool(visible)
+            self._redraw()
 
     def set_theme(self, mode: str):
         """Switch canvas color palette to 'dark' or 'light' and redraw."""
@@ -101,6 +125,27 @@ class MetricsChart(ttk.Frame):
 
     # ── drawing ──────────────────────────────────────────────────────────────
 
+    def _compute_panel_rects(self, W: int, H: int) -> dict:
+        """Return ordered dict of panel_key -> (x0, y0, x1, y1) for visible panels."""
+        ml, mr = self.MARGIN_L, self.MARGIN_R
+        mt, mb, gap = self.MARGIN_T, self.MARGIN_B, self.GAP
+        visible = [k for k in self._PANEL_ORDER if self._graphs_visible.get(k, True)]
+        if not visible:
+            return {}
+        n = len(visible)
+        usable_h = H - mt - mb - gap * (n - 1)
+        if usable_h < n:
+            return {}
+        total_weight = sum(self._PANEL_WEIGHT[k] for k in visible)
+        heights = [int(usable_h * self._PANEL_WEIGHT[k] / total_weight) for k in visible]
+        heights[-1] += usable_h - sum(heights)   # correct rounding
+        x0, x1 = ml, W - mr
+        rects, y = {}, mt
+        for i, k in enumerate(visible):
+            rects[k] = (x0, y, x1, y + heights[i])
+            y += heights[i] + (gap if i < n - 1 else 0)
+        return rects
+
     def _redraw(self):
         c = self._canvas
         c.delete('all')
@@ -109,67 +154,63 @@ class MetricsChart(ttk.Frame):
         if W < 20 or H < 20:
             return
 
-        ml   = self.MARGIN_L
-        mr   = self.MARGIN_R
-        mt   = self.MARGIN_T
-        mb   = self.MARGIN_B
-        gap  = self.GAP
-        n_gl = 4               # grid lines per graph
-
-        usable_h = H - mt - mb - 2 * gap
-        # PP gets 40 %, TG gets 40 %, draft gets 20 %
-        g1_h = int(usable_h * 0.40)
-        g2_h = int(usable_h * 0.40)
-        g3_h = usable_h - g1_h - g2_h
-
-        # Graph bounds
-        g1_x0, g1_y0 = ml, mt
-        g1_x1, g1_y1 = W - mr, mt + g1_h
-
-        g2_x0, g2_y0 = ml, g1_y1 + gap
-        g2_x1, g2_y1 = W - mr, g2_y0 + g2_h
-
-        g3_x0, g3_y0 = ml, g2_y1 + gap
-        g3_x1, g3_y1 = W - mr, g3_y0 + g3_h
-
+        ml     = self.MARGIN_L
+        mr     = self.MARGIN_R
         plot_w = W - ml - mr
+        n_gl   = 4
 
-        # Backgrounds
-        c.create_rectangle(g1_x0, g1_y0, g1_x1, g1_y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
-        c.create_rectangle(g2_x0, g2_y0, g2_x1, g2_y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
-        c.create_rectangle(g3_x0, g3_y0, g3_x1, g3_y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
+        rects = self._compute_panel_rects(W, H)
+        if not rects:
+            return
 
-        # X-axis labels (bottom only)
-        c.create_text(ml,     H - 10, text=f'−{self._time_window_s}s', anchor='w',
+        # X-axis labels below the last visible panel
+        last_y1 = list(rects.values())[-1][3]
+        c.create_text(ml,     last_y1 + 10, text=f'−{self._time_window_s}s',
+                      anchor='w', fill=self.C_TEXT, font=('Consolas', 7))
+        c.create_text(W - mr, last_y1 + 10, text='now', anchor='e',
                       fill=self.C_TEXT, font=('Consolas', 7))
-        c.create_text(W - mr, H - 10, text='now', anchor='e',
-                      fill=self.C_TEXT, font=('Consolas', 7))
 
-        # ── Graph 1: PP tok/s ─────────────────────────────────────────────────
-        max_pp = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
-        self._draw_grid(c, g1_x0, g1_y0, g1_x1, g1_y1, ml, max_pp, n_gl,
-                        fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
-        c.create_text(6, (g1_y0 + g1_y1) // 2, text='pp', angle=90,
-                      fill=self.C_AXIS, font=('Consolas', 7))
-        c.create_text(g1_x1 - 4, g1_y0 + 8, text='PP tok/s', anchor='e',
-                      fill=self.C_PROMPT, font=('Consolas', 7))
+        # ── Panel backgrounds, grids, and axis labels ─────────────────────────
+        for key, (x0, y0, x1, y1) in rects.items():
+            c.create_rectangle(x0, y0, x1, y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
 
-        # ── Graph 2: TG tok/s ─────────────────────────────────────────────────
-        max_tg = self._nice_ceil(max(self._gen)) if self._gen else 10.0
-        self._draw_grid(c, g2_x0, g2_y0, g2_x1, g2_y1, ml, max_tg, n_gl,
-                        fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
-        c.create_text(6, (g2_y0 + g2_y1) // 2, text='tg', angle=90,
-                      fill=self.C_AXIS, font=('Consolas', 7))
-        c.create_text(g2_x1 - 4, g2_y0 + 8, text='TG tok/s', anchor='e',
-                      fill=self.C_GEN, font=('Consolas', 7))
+            if key == 'pp':
+                max_val = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
+                self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
+                                fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
+                c.create_text(6, (y0 + y1) // 2, text='pp', angle=90,
+                              fill=self.C_AXIS, font=('Consolas', 7))
+                c.create_text(x1 - 4, y0 + 8, text='PP tok/s', anchor='e',
+                              fill=self.C_PROMPT, font=('Consolas', 7))
 
-        # ── Graph 3: draft % ──────────────────────────────────────────────────
-        self._draw_grid(c, g3_x0, g3_y0, g3_x1, g3_y1, ml, 100.0, n_gl,
-                        fmt=lambda v: f'{v:.0f}%')
-        c.create_text(6, (g3_y0 + g3_y1) // 2, text='draft', angle=90,
-                      fill=self.C_AXIS, font=('Consolas', 7))
-        c.create_text(g3_x1 - 4, g3_y0 + 8, text='Draft %', anchor='e',
-                      fill=self.C_DRAFT, font=('Consolas', 7))
+            elif key == 'tg':
+                max_val = self._nice_ceil(max(self._gen)) if self._gen else 10.0
+                self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
+                                fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
+                c.create_text(6, (y0 + y1) // 2, text='tg', angle=90,
+                              fill=self.C_AXIS, font=('Consolas', 7))
+                c.create_text(x1 - 4, y0 + 8, text='TG tok/s', anchor='e',
+                              fill=self.C_GEN, font=('Consolas', 7))
+
+            elif key == 'draft_pct':
+                self._draw_grid(c, x0, y0, x1, y1, ml, 100.0, n_gl,
+                                fmt=lambda v: f'{v:.0f}%')
+                c.create_text(6, (y0 + y1) // 2, text='draft', angle=90,
+                              fill=self.C_AXIS, font=('Consolas', 7))
+                c.create_text(x1 - 4, y0 + 8, text='Draft %', anchor='e',
+                              fill=self.C_DRAFT, font=('Consolas', 7))
+
+            elif key == 'draft_tokens':
+                all_dt  = self._draft_gen + self._draft_acc
+                max_dt  = self._nice_ceil(max(all_dt)) if all_dt else 10.0
+                self._draw_grid(c, x0, y0, x1, y1, ml, max_dt, n_gl,
+                                fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
+                c.create_text(6, (y0 + y1) // 2, text='dtok', angle=90,
+                              fill=self.C_AXIS, font=('Consolas', 7))
+                c.create_text(x1 - 4, y0 + 8,  text='gen', anchor='e',
+                              fill=self.C_DRAFT_GEN, font=('Consolas', 7))
+                c.create_text(x1 - 4, y0 + 18, text='acc', anchor='e',
+                              fill=self.C_DRAFT_ACC, font=('Consolas', 7))
 
         # ── Draw lines ────────────────────────────────────────────────────────
         n = len(self._prompt)
@@ -193,9 +234,29 @@ class MetricsChart(ttk.Frame):
             if len(coords) >= 4:
                 c.create_line(*coords, fill=color, width=1.5, smooth=True)
 
-        draw_line(self._prompt, self.C_PROMPT, make_to_y(g1_y0, g1_y1, max_pp))
-        draw_line(self._gen,    self.C_GEN,    make_to_y(g2_y0, g2_y1, max_tg))
-        draw_line(self._draft,  self.C_DRAFT,  make_to_y(g3_y0, g3_y1, 100.0))
+        if 'pp' in rects:
+            r = rects['pp']
+            max_pp = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
+            draw_line(self._prompt, self.C_PROMPT, make_to_y(r[1], r[3], max_pp))
+
+        if 'tg' in rects:
+            r = rects['tg']
+            max_tg = self._nice_ceil(max(self._gen)) if self._gen else 10.0
+            draw_line(self._gen, self.C_GEN, make_to_y(r[1], r[3], max_tg))
+
+        if 'draft_pct' in rects:
+            r = rects['draft_pct']
+            draw_line(self._draft, self.C_DRAFT, make_to_y(r[1], r[3], 100.0))
+
+        if 'draft_tokens' in rects:
+            r = rects['draft_tokens']
+            all_dt = self._draft_gen + self._draft_acc
+            max_dt = self._nice_ceil(max(all_dt)) if all_dt else 10.0
+            to_y_dt = make_to_y(r[1], r[3], max_dt)
+            n_dt = len(self._draft_gen)
+            if n_dt >= 2:
+                draw_line(self._draft_gen, self.C_DRAFT_GEN, to_y_dt)
+                draw_line(self._draft_acc, self.C_DRAFT_ACC, to_y_dt)
 
         self._draw_hover()
 
@@ -210,20 +271,11 @@ class MetricsChart(ttk.Frame):
         self._canvas.delete('hover')
 
     def _geometry(self, W, H):
-        """Return panel geometry — mirrors _redraw() so hover uses same bounds."""
-        ml, mr, mt, mb, gap = (self.MARGIN_L, self.MARGIN_R,
-                                self.MARGIN_T, self.MARGIN_B, self.GAP)
-        usable_h = H - mt - mb - 2 * gap
-        g1_h = int(usable_h * 0.40)
-        g2_h = int(usable_h * 0.40)
-        g3_h = usable_h - g1_h - g2_h
-        return dict(
-            ml=ml, mr=mr, plot_w=W - ml - mr,
-            g1=(ml, mt,            W - mr, mt + g1_h),
-            g2=(ml, mt + g1_h + gap,       W - mr, mt + g1_h + gap + g2_h),
-            g3=(ml, mt + g1_h + gap + g2_h + gap,
-                W - mr, mt + g1_h + gap + g2_h + gap + g3_h),
-        )
+        """Return panel geometry dict — mirrors _compute_panel_rects for hover use."""
+        rects = self._compute_panel_rects(W, H)
+        return dict(ml=self.MARGIN_L, mr=self.MARGIN_R,
+                    plot_w=W - self.MARGIN_L - self.MARGIN_R,
+                    panels=rects)
 
     def _draw_hover(self):
         c = self._canvas
@@ -237,6 +289,9 @@ class MetricsChart(ttk.Frame):
 
         g = self._geometry(W, H)
         ml, mr, plot_w = g['ml'], g['mr'], g['plot_w']
+        panels = g['panels']
+        if not panels:
+            return
         mx = self._hover_x
 
         # Only show when cursor is inside the plot area
@@ -260,46 +315,55 @@ class MetricsChart(ttk.Frame):
         def interp(data):
             return data[i0] * (1 - t) + data[i1] * t
 
-        pp_val = interp(self._prompt)
-        tg_val = interp(self._gen)
-        dr_val = interp(self._draft)
-
-        max_pp = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
-        max_tg = self._nice_ceil(max(self._gen))    if self._gen    else 10.0
-
-        # Vertical rule spanning top of panel-1 to bottom of panel-3
-        top  = g['g1'][1]
-        bot  = g['g3'][3]
+        # Vertical rule spanning top of first panel to bottom of last panel
+        panel_list = list(panels.values())
+        top = panel_list[0][1]
+        bot = panel_list[-1][3]
         c.create_line(mx, top, mx, bot,
                       fill=self.C_RULE, width=1, dash=(3, 3), tags='hover')
 
-        # Per-panel: dot at intersection + value label
-        panels = [
-            (g['g1'], max_pp, pp_val, self.C_PROMPT,
-             lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k'),
-            (g['g2'], max_tg, tg_val, self.C_GEN,
-             lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k'),
-            (g['g3'], 100.0,  dr_val, self.C_DRAFT,
-             lambda v: f'{v:.1f}%'),
-        ]
-
-        for (x0, py0, x1, py1), max_val, val, color, fmt in panels:
+        def draw_dot_label(val, color, fmt, x0, py0, x1, py1, max_val, y_offset=0):
             cy = py1 - (val / max_val) * (py1 - py0)
             cy = max(py0, min(py1, cy))
-            # Dot
             r = 3
             c.create_oval(mx - r, cy - r, mx + r, cy + r,
                           fill=color, outline='', tags='hover')
-            # Label — raised 14 px above dot; flip side near right edge
             label  = fmt(val)
             lx     = mx + 6 if mx + 52 < x1 else mx - 6
             anchor = 'w'     if lx > mx      else 'e'
-            ty     = cy - 14
-            # Shadow offset (+1, +1) then foreground — colors flip in light mode
+            ty     = cy - 14 + y_offset
             c.create_text(lx + 1, ty + 1, text=label, fill=self.C_HOVER_SHADOW,
                           anchor=anchor, font=('Consolas', 8, 'bold'), tags='hover')
             c.create_text(lx,     ty,     text=label, fill=self.C_HOVER_TEXT,
                           anchor=anchor, font=('Consolas', 8, 'bold'), tags='hover')
+
+        for key, (x0, py0, x1, py1) in panels.items():
+            if key == 'pp':
+                max_pp = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
+                draw_dot_label(interp(self._prompt), self.C_PROMPT,
+                               lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k',
+                               x0, py0, x1, py1, max_pp)
+
+            elif key == 'tg':
+                max_tg = self._nice_ceil(max(self._gen)) if self._gen else 10.0
+                draw_dot_label(interp(self._gen), self.C_GEN,
+                               lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k',
+                               x0, py0, x1, py1, max_tg)
+
+            elif key == 'draft_pct':
+                draw_dot_label(interp(self._draft), self.C_DRAFT,
+                               lambda v: f'{v:.1f}%',
+                               x0, py0, x1, py1, 100.0)
+
+            elif key == 'draft_tokens':
+                all_dt = self._draft_gen + self._draft_acc
+                max_dt = self._nice_ceil(max(all_dt)) if all_dt else 10.0
+                fmt_dt = lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.2f}k'
+                if len(self._draft_gen) > 1:
+                    draw_dot_label(interp(self._draft_gen), self.C_DRAFT_GEN,
+                                   fmt_dt, x0, py0, x1, py1, max_dt, y_offset=0)
+                    draw_dot_label(interp(self._draft_acc), self.C_DRAFT_ACC,
+                                   fmt_dt, x0, py0, x1, py1, max_dt, y_offset=12)
 
     def _draw_grid(self, c, x0, y0, x1, y1, ml, max_val, n, fmt):
         """Draw horizontal grid lines and Y-axis labels for one graph."""
@@ -352,6 +416,8 @@ class MonitorTab(ttk.Frame):
         self._raw_prompt: deque = deque(maxlen=_MAX_RAW)
         self._raw_gen:    deque = deque(maxlen=_MAX_RAW)
         self._raw_draft:  deque = deque(maxlen=_MAX_RAW)
+        self._raw_draft_gen: deque = deque(maxlen=_MAX_RAW)
+        self._raw_draft_acc: deque = deque(maxlen=_MAX_RAW)
         # Smoothing window in ms: average all samples within [now-window, now];
         # if none fall inside the window the most recent sample is used as-is.
         self._graph_smooth_ms:  int = 2000
@@ -388,6 +454,8 @@ class MonitorTab(ttk.Frame):
         self._lbl_gen_tps.pack(fill='x', pady=1)
         self._lbl_draft = ttk.Label(sm_frame, text='Draft: --%')
         self._lbl_draft.pack(fill='x', pady=1)
+        self._lbl_draft_tokens = ttk.Label(sm_frame, text='Draft tok: --/--')
+        self._lbl_draft_tokens.pack(fill='x', pady=1)
         self._lbl_graphs = ttk.Label(sm_frame, text='Graphs: --')
         self._lbl_graphs.pack(fill='x', pady=1)
         self._lbl_status = ttk.Label(sm_frame, text='Status: Idle',
@@ -527,7 +595,9 @@ class MonitorTab(ttk.Frame):
 
         self._chart.add_point(_avg(self._raw_prompt),
                               _avg(self._raw_gen),
-                              _avg(self._raw_draft))
+                              _avg(self._raw_draft),
+                              _avg(self._raw_draft_gen),
+                              _avg(self._raw_draft_acc))
         self._graph_tick_id = self.after(250, self._graph_tick)
 
     def _schedule_next(self):
@@ -780,6 +850,10 @@ class MonitorTab(ttk.Frame):
             pct = metrics.draft_acceptance_rate * 100
             self._raw_draft.append((now, pct))
             self._lbl_draft.config(text=f'Draft: {pct:.1f}%')
+            self._raw_draft_gen.append((now, float(metrics.draft_total)))
+            self._raw_draft_acc.append((now, float(metrics.draft_accepted)))
+            self._lbl_draft_tokens.config(
+                text=f'Draft tok: {metrics.draft_accepted}/{metrics.draft_total}')
         if metrics.graphs_reused > 0:
             self._lbl_graphs.config(
                 text=f'Graphs: {metrics.graphs_reused} reused')

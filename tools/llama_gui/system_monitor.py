@@ -62,6 +62,24 @@ class SystemMonitor:
         if self._thread:
             self._thread.join(timeout=3.0)
 
+    # ── Public read-only properties ──────────────────────────────────────
+
+    @property
+    def cpu_percent(self) -> float:
+        return self._cpu_percent
+
+    @property
+    def memory(self) -> dict:
+        return self._memory
+
+    @property
+    def swap(self) -> dict:
+        return self._swap
+
+    @property
+    def gpu(self) -> dict:
+        return self._gpu
+
     # ── Public snapshot ───────────────────────────────────────────────────
 
     def get_snapshot(self) -> dict:

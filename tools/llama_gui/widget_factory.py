@@ -214,6 +214,7 @@ class OptionWidget:
         elif self.widget_type == 'checkbox':
             self._var = tk.StringVar(value='')
             self.widget = _ScrollFreeCombobox(self.parent,
+                                              textvariable=self._var,
                                               values=['', 'on', 'off'],
                                               state='readonly', width=10)
 
