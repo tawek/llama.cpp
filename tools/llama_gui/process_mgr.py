@@ -163,7 +163,7 @@ class ServerProcess:
         """Parse command string into list of arguments."""
         import shlex
         try:
-            return shlex.split(command)
+            parts = shlex.split(command)
         except ValueError:
-            # Fallback: simple split
-            return command.split()
+            parts = command.split()
+        return [os.path.expanduser(p) for p in parts]
