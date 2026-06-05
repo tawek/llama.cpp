@@ -204,7 +204,8 @@ class ConfigTab(ttk.Frame):
             'spec_draft_cpu_moe', 'spec_draft_n_cpu_moe',
             'spec_draft_override_tensor',
             'spec_draft_p_split', 'spec_draft_p_min',
-            'spec_draft_device', 'spec_draft_ngl']),
+            'spec_draft_device', 'spec_draft_ngl',
+            'spec_draft_n_max', 'spec_draft_n_min']),
         ('ngram-simple', 'Ngram Simple', [
             'ngram_min', 'ngram_max', 'ngram_no_alloc',
             'spec_ngram_simple_size_n', 'spec_ngram_simple_size_m',
@@ -227,7 +228,7 @@ class ConfigTab(ttk.Frame):
 
     def _build_speculative_section(self, pane, all_opts):
         """Build the Speculative section with per-type sub-panels."""
-        always_visible = ['spec_type', 'spec_draft_n_max', 'spec_draft_n_min']
+        always_visible = ['spec_type']
         for row, key in enumerate(always_visible):
             if key not in all_opts:
                 continue

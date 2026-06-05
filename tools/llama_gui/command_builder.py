@@ -254,13 +254,113 @@ def _format_arg(value):
     return f'"{value}"' if ' ' in value else value
 
 
+# Which option keys belong to which spec type(s)
+_SPEC_TYPE_KEY_MAP = {
+    'draft-simple': {
+        'spec_draft_model', 'spec_draft_hf', 'spec_draft_threads',
+        'spec_draft_threads_batch', 'spec_draft_cpu_mask',
+        'spec_draft_cpu_range', 'spec_draft_cpu_strict',
+        'spec_draft_prio', 'spec_draft_poll',
+        'spec_draft_type_k', 'spec_draft_type_v',
+        'spec_draft_cpu_moe', 'spec_draft_n_cpu_moe',
+        'spec_draft_override_tensor',
+        'spec_draft_p_split', 'spec_draft_p_min',
+        'spec_draft_device', 'spec_draft_ngl',
+        'spec_draft_n_max', 'spec_draft_n_min',
+    },
+    'draft-eagle3': {
+        'spec_draft_model', 'spec_draft_hf', 'spec_draft_threads',
+        'spec_draft_threads_batch', 'spec_draft_cpu_mask',
+        'spec_draft_cpu_range', 'spec_draft_cpu_strict',
+        'spec_draft_prio', 'spec_draft_poll',
+        'spec_draft_type_k', 'spec_draft_type_v',
+        'spec_draft_cpu_moe', 'spec_draft_n_cpu_moe',
+        'spec_draft_override_tensor',
+        'spec_draft_p_split', 'spec_draft_p_min',
+        'spec_draft_device', 'spec_draft_ngl',
+        'spec_draft_n_max', 'spec_draft_n_min',
+    },
+    'draft-mtp': {
+        'spec_draft_model', 'spec_draft_hf', 'spec_draft_threads',
+        'spec_draft_threads_batch', 'spec_draft_cpu_mask',
+        'spec_draft_cpu_range', 'spec_draft_cpu_strict',
+        'spec_draft_prio', 'spec_draft_poll',
+        'spec_draft_type_k', 'spec_draft_type_v',
+        'spec_draft_cpu_moe', 'spec_draft_n_cpu_moe',
+        'spec_draft_override_tensor',
+        'spec_draft_p_split', 'spec_draft_p_min',
+        'spec_draft_device', 'spec_draft_ngl',
+        'spec_draft_n_max', 'spec_draft_n_min',
+    },
+    'ngram-simple': {
+        'ngram_min', 'ngram_max', 'ngram_no_alloc',
+        'spec_ngram_simple_size_n', 'spec_ngram_simple_size_m',
+        'spec_ngram_simple_min_hits',
+    },
+    'ngram-map-k': {
+        'ngram_min', 'ngram_max', 'ngram_no_alloc',
+        'spec_ngram_map_k_size_n', 'spec_ngram_map_k_size_m',
+        'spec_ngram_map_k_min_hits',
+    },
+    'ngram-map-k4v': {
+        'ngram_min', 'ngram_max', 'ngram_no_alloc',
+        'spec_ngram_map_k4v_size_n', 'spec_ngram_map_k4v_size_m',
+        'spec_ngram_map_k4v_min_hits',
+    },
+    'ngram-mod': {
+        'ngram_min', 'ngram_max', 'ngram_no_alloc',
+        'spec_ngram_mod_n_match', 'spec_ngram_mod_n_max',
+        'spec_ngram_mod_n_min',
+    },
+    'ngram-cache': {
+        'lookup_cache_static', 'lookup_cache_dynamic',
+    },
+}
+
+_SPEC_SPECULATIVE_PREFIXES = ('spec_', 'ngram_', 'lookup_cache_')
+
+def _is_speculative_key(key):
+    """Check if a key is a speculative option."""
+    return any(key.startswith(prefix) for prefix in _SPEC_SPECULATIVE_PREFIXES)
+
+
+def _get_allowed_spec_keys(option_map):
+    """Return set of allowed speculative option keys based on selected spec types.
+
+    Returns an empty set if no speculative type is selected or specified.
+    """
+    spec_opt = option_map.get('spec_type')
+    if not spec_opt:
+        return set()  # no spec_type set → no speculative options allowed
+
+    raw = spec_opt.get_value() or ''
+    selected = [t.strip() for t in raw.split(',') if t.strip()]
+
+    if not selected:
+        return set()  # empty spec type list → exclude all speculative options
+
+    allowed = set()
+    for stype in selected:
+        if stype in _SPEC_TYPE_KEY_MAP:
+            allowed |= _SPEC_TYPE_KEY_MAP[stype]
+
+    return allowed
+
+
 def build_command(option_map):
     """Build CLI command string from option_map {key: OptionWidget}."""
     parts = ['llama-server']
 
+    allowed_keys = _get_allowed_spec_keys(option_map)
+
     for key, opt in option_map.items():
         if opt.widget_type == 'panel_header':
             continue
+
+        # Skip speculative options not belonging to selected spec types
+        if key != 'spec_type' and _is_speculative_key(key) and key not in allowed_keys:
+            continue
+
         val = opt.get_value()
         if val is None or val == '':
             continue
