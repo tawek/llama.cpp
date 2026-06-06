@@ -110,6 +110,9 @@ PREFIX_MAP = {
     'webui': '--webui', 'webui_config': '--webui-config',
     'tools': '--tools', 'embedding': '--embedding', 'rerank': '--rerank',
     'metrics': '--metrics', 'props': '--props', 'slots': '--slots',
+    'log_file': '--log-file', 'log_colors': '--log-colors',
+    'log_verbosity': '--log-verbosity', 'log_prefix': '--log-prefix',
+    'log_timestamps': '--log-timestamps', 'log_disable': '--log-disable',
     'cont_batching': '--cont-batching',
     'pooling': '--pooling', 'attention': '--attention',
     # Panel headers (UI-only, not used in command building)
@@ -132,6 +135,9 @@ PREFIX_MAP = {
     'slots_no': '--no-slots',
     'direct_io_no': '--no-direct-io',
     'webui_no': '--no-webui',
+    'log_prefix_no': '--no-log-prefix',
+    'log_timestamps_no': '--no-log-timestamps',
+    'log_disable_no': '--no-log-disable',
 }
 
 # Reverse map: CLI flag → config key (built from PREFIX_MAP)
@@ -160,6 +166,7 @@ _BOOLEAN_KEYS = {
     'tools', 'embedding', 'rerank', 'metrics', 'props', 'slots',
     'cont_batching', 'webui', 'no_mmap',
     'fit', 'fit_print',
+    'log_prefix', 'log_timestamps', 'log_disable',
 }
 
 
@@ -245,7 +252,7 @@ _NO_NEGATED = {'mlock', 'check_tensors', 'cpu_moe', 'cpu_strict',
                'multiline_input', 'simple_io', 'tools', 'embedding',
                'rerank', 'metrics', 'props', 'cache_idle_slots',
                'kv_unified', 'swa_full', 'lora_init_without_apply',
-               'fit', 'flash_attn'}
+               'fit', 'flash_attn', 'log_disable', 'log_prefix', 'log_timestamps'}
 
 
 def _format_arg(value):
