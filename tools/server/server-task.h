@@ -506,27 +506,7 @@ struct server_task_result_error : server_task_result {
 };
 
 struct server_task_result_metrics : server_task_result {
-    int n_idle_slots;
-    int n_processing_slots;
-    int n_tasks_deferred;
-    int64_t t_start;
-
-    // TODO: somehow reuse server_metrics in the future, instead of duplicating the fields
-    uint64_t n_prompt_tokens_processed_total = 0;
-    uint64_t t_prompt_processing_total       = 0;
-    uint64_t n_tokens_predicted_total        = 0;
-    uint64_t t_tokens_generation_total       = 0;
-
-    uint64_t n_tokens_max = 0;
-
-    uint64_t n_prompt_tokens_processed = 0;
-    uint64_t t_prompt_processing       = 0;
-
-    uint64_t n_tokens_predicted  = 0;
-    uint64_t t_tokens_generation = 0;
-
-    uint64_t n_decode_total     = 0;
-    uint64_t n_busy_slots_total = 0;
+    int n_idle_slots = 0;
 
     // while we can also use std::vector<server_slot> this requires copying the slot object which can be quite messy
     // therefore, we use json to temporarily store the slot.to_json() result

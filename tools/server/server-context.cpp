@@ -2,6 +2,7 @@
 #include "server-chat.h"
 #include "server-common.h"
 #include "server-http.h"
+#include "server-metrics.h"
 #include "server-task.h"
 #include "server-queue.h"
 #include "server-schema.h"
@@ -785,66 +786,6 @@ struct server_slot {
 
 
 
-//
-// server_metrics
-//
-
-struct server_metrics {
-    int64_t t_start = 0;
-
-    uint64_t n_prompt_tokens_processed_total = 0;
-    uint64_t t_prompt_processing_total       = 0;
-    uint64_t n_tokens_predicted_total        = 0;
-    uint64_t t_tokens_generation_total       = 0;
-
-    uint64_t n_tokens_max = 0;
-
-    uint64_t n_prompt_tokens_processed = 0;
-    uint64_t t_prompt_processing       = 0;
-
-    uint64_t n_tokens_predicted  = 0;
-    uint64_t t_tokens_generation = 0;
-
-    uint64_t n_decode_total     = 0;
-    uint64_t n_busy_slots_total = 0;
-
-    void init() {
-        t_start = ggml_time_us();
-    }
-
-    void on_prompt_eval(const server_slot & slot) {
-        n_prompt_tokens_processed_total += slot.n_prompt_tokens_processed;
-        n_prompt_tokens_processed       += slot.n_prompt_tokens_processed;
-        t_prompt_processing             += slot.t_prompt_processing;
-        t_prompt_processing_total       += slot.t_prompt_processing;
-
-        n_tokens_max = std::max(n_tokens_max, (uint64_t) slot.prompt.n_tokens());
-    }
-
-    void on_prediction(const server_slot & slot) {
-        n_tokens_predicted_total   += slot.n_decoded;
-        n_tokens_predicted         += slot.n_decoded;
-        t_tokens_generation        += slot.t_token_generation;
-        t_tokens_generation_total  += slot.t_token_generation;
-    }
-
-    void on_decoded(const std::vector<server_slot> & slots) {
-        n_decode_total++;
-        for (const auto & slot : slots) {
-            if (slot.is_processing()) {
-                n_busy_slots_total++;
-            }
-            n_tokens_max = std::max(n_tokens_max, (uint64_t) slot.prompt.n_tokens());
-        }
-    }
-
-    void reset_bucket() {
-        n_prompt_tokens_processed = 0;
-        t_prompt_processing       = 0;
-        n_tokens_predicted        = 0;
-        t_tokens_generation       = 0;
-    }
-};
 
 
 //
@@ -870,6 +811,12 @@ public:
     server_chat_params chat_params;
 
     server_state_callback_t callback_state = [](server_state, json) -> void {};
+
+    // Lock-free Prometheus metrics — safe to read from any thread at any time.
+    // Written only from the task thread; no additional synchronization needed.
+    // Declared mutable so that reset_global() can be called through a const reference
+    // (e.g., from HTTP handler lambdas that hold a const server_context_impl &).
+    mutable server_metrics metrics;
 
     server_context_impl() {
         mtmd_helper_log_set(common_log_default_callback, nullptr);
@@ -921,9 +868,8 @@ private:
 
     std::unique_ptr<server_prompt_cache> prompt_cache;
 
-    server_metrics metrics;
-
-    json json_ui_settings = json::object();
+    json json_ui_settings = json::object();    // Primary: new name
+    json json_webui_settings = json::object();    // Deprecated: use json_ui_settings instead (kept for compat)
 
     // Necessary similarity of prompt for slot selection
     float slot_prompt_similarity = 0.0f;
@@ -1161,6 +1107,13 @@ private:
 
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();
+
+        // Register per-ubatch PP callback so metrics.n_pp stays current during long prompts.
+        // Pass &metrics directly — no need to go through the full impl pointer.
+        llama_set_pp_eval_callback(ctx_tgt,
+            [](uint32_t n_tokens, void * ud) {
+                static_cast<server_metrics *>(ud)->on_pp_tokens(n_tokens);
+            }, &metrics);
 
         if (model_tgt == nullptr) {
             SRV_ERR("failed to load model, '%s'\n", params_base.model.path.c_str());
@@ -1462,7 +1415,7 @@ private:
             handle_sleeping_state(sleeping);
         });
 
-        metrics.init();
+        metrics.init((int) slots.size());
 
         if (params_base.cache_idle_slots) {
             if (params_base.cache_ram_mib == 0) {
@@ -2479,48 +2432,23 @@ private:
                 {
                     json slots_data = json::array();
 
-                    int n_idle_slots       = 0;
-                    int n_processing_slots = 0;
+                    int n_idle_slots = 0;
 
                     for (server_slot & slot : slots) {
                         json slot_data = slot.to_json(slots_debug == 0);
 
-                        if (slot.is_processing()) {
-                            n_processing_slots++;
-                        } else {
+                        if (!slot.is_processing()) {
                             n_idle_slots++;
                         }
 
                         slots_data.push_back(slot_data);
                     }
-                    SRV_DBG("n_idle_slots = %d, n_processing_slots = %d\n", n_idle_slots, n_processing_slots);
+                    SRV_DBG("n_idle_slots = %d\n", n_idle_slots);
 
                     auto res = std::make_unique<server_task_result_metrics>();
-                    res->id                  = task.id;
-                    res->slots_data          = std::move(slots_data);
-                    res->n_idle_slots        = n_idle_slots;
-                    res->n_processing_slots  = n_processing_slots;
-                    res->n_tasks_deferred    = queue_tasks.queue_tasks_deferred_size();
-                    res->t_start             = metrics.t_start;
-
-                    res->n_prompt_tokens_processed_total = metrics.n_prompt_tokens_processed_total;
-                    res->t_prompt_processing_total       = metrics.t_prompt_processing_total;
-                    res->n_tokens_predicted_total        = metrics.n_tokens_predicted_total;
-                    res->t_tokens_generation_total       = metrics.t_tokens_generation_total;
-
-                    res->n_tokens_max = metrics.n_tokens_max;
-
-                    res->n_prompt_tokens_processed = metrics.n_prompt_tokens_processed;
-                    res->t_prompt_processing       = metrics.t_prompt_processing;
-                    res->n_tokens_predicted        = metrics.n_tokens_predicted;
-                    res->t_tokens_generation       = metrics.t_tokens_generation;
-
-                    res->n_decode_total          = metrics.n_decode_total;
-                    res->n_busy_slots_total      = metrics.n_busy_slots_total;
-
-                    if (task.metrics_reset_bucket) {
-                        metrics.reset_bucket();
-                    }
+                    res->id          = task.id;
+                    res->slots_data  = std::move(slots_data);
+                    res->n_idle_slots = n_idle_slots;
                     queue_results.send(std::move(res));
                 } break;
             case SERVER_TASK_TYPE_SLOT_SAVE:
@@ -2985,6 +2913,7 @@ private:
             auto & ckpt  = slot.spec_ckpt;
 
             slot.n_draft_total += draft.size();
+            metrics.on_draft_tokens(slot.id, draft.size());
 
             // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
@@ -3073,6 +3002,7 @@ private:
                         slot.t_start_process_prompt = ggml_time_us();
                         slot.t_start_generation = 0;
 
+                        metrics.reset_slot(slot.id);
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
 
                         SLT_TRC(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, task.n_tokens = %d\n",
@@ -3599,8 +3529,6 @@ private:
 
         const int ret = llama_decode(ctx_tgt, batch_view);
 
-        metrics.on_decoded(slots);
-
         if (ret != 0) {
             {
                 std::string err;
@@ -3912,11 +3840,33 @@ private:
                 // TODO: set result.probs
 
                 slot.n_decoded += 1;
+                metrics.on_tg_token(slot.id);
 
+                if (slot.n_decoded == 1) {
+                    slot.t_start_generation = t_now;
+                    slot.t_print_last = t_now;
+                    slot.n_decoded_last = 0;
+                    slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
+                    metrics.on_pp_eval(slot.id,
+                                       slot.n_prompt_tokens_processed,
+                                       slot.t_prompt_processing,
+                                       (uint64_t) slot.prompt.n_tokens());
+                }
+
+                slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
+
+                completion_token_output result;
+                result.tok          = id;
+                result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
+                result.prob         = 1.0f; // TODO: set it here instead of doing inside populate_token_probs
+
+                if (slot.task->params.sampling.n_probs > 0) {
+                    populate_token_probs(slot, result, slot.task->params.post_sampling_probs, params_base.special, tok_idx);
+                }
                 if (!process_token(result, slot)) {
                     slot.print_timings();
                     send_final_response(slot);
-                    metrics.on_prediction(slot);
+                    metrics.on_tg_done(slot.id, slot.t_token_generation);
                     slot.release();
 
                     return;
@@ -3925,8 +3875,120 @@ private:
 
             slot.print_timings_tg();
 
-            SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
-        });
+                // save the original draft size
+                const size_t n_draft = slot.spec_draft.size();
+
+                GGML_ASSERT(n_draft > 0);
+
+                // verify and try to accept the draft
+                {
+                    // save the sampler sampler state in case we need to restore it
+                    common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
+
+                    GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
+                    auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft);
+                    slot.spec_i_batch.clear();
+
+                    GGML_ASSERT(accepted.size() >= 1);
+
+                    const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+
+                    const bool use_ckpt_tgt =
+                        ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
+                       (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_rollback > llama_n_rs_seq(ctx_tgt));
+                    // check for partial draft acceptance
+                    if (n_rollback > 0) {
+                        if (use_ckpt_tgt) {
+                            if (trace > 0) {
+                                SLT_INF(slot, "accepted %2zu/%2zu draft tokens (restore checkpoint)\n", accepted.size() - 1, slot.spec_draft.size());
+                            }
+
+                            // partial acceptance is not supported by the context -> truncate the draft and restore the state
+                            slot.spec_draft = std::move(accepted);
+
+                            const auto & ckpt = slot.spec_ckpt;
+
+                            SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
+
+                            {
+                                ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+
+                                common_context_seq_rm(slot.ctx_tgt, slot.id, ckpt.pos_max + 1, -1);
+                            }
+
+                            if (slot.ctx_dft) {
+                                ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+
+                                common_context_seq_rm(slot.ctx_dft, slot.id, ckpt.pos_max + 1, -1);
+                            }
+
+                            slot.prompt.tokens.keep_first(ckpt.n_tokens);
+                            slot.smpl = std::move(smpl_save);
+
+                            continue;
+                        }
+                    }
+
+                    if (trace > 0) {
+                        SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
+                    }
+
+                    common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
+
+                    slot.spec_draft = std::move(accepted);
+                }
+
+                const int64_t t_now = ggml_time_us();
+
+                const auto ids = std::move(slot.spec_draft);
+
+                slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
+
+                // update how many tokens out of those tested were accepted
+                slot.n_draft_accepted += ids.size() - 1;
+                metrics.on_draft_accepted(slot.id, ids.size() - 1);
+
+                // add accepted tokens to the prompt
+                slot.prompt.tokens.keep_first(slot.prompt.n_tokens() - n_draft);
+                slot.prompt.tokens.insert({ids.begin(), ids.end() - 1});
+
+                slot.sampled = ids.back(); // last accepted token
+                SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
+
+                common_context_seq_rm(slot.ctx_tgt, slot.id, slot.prompt.tokens.pos_next(), -1);
+                if (slot.ctx_dft) {
+                    common_context_seq_rm(slot.ctx_dft, slot.id, slot.prompt.tokens.pos_next(), -1);
+                }
+
+                for (size_t i = 0; i < ids.size(); ++i) {
+                    completion_token_output result;
+
+                    result.tok          = ids[i];
+                    result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
+                    result.prob         = 1.0f; // set later
+
+                    // TODO: set result.probs
+
+                    slot.n_decoded += 1;
+                    metrics.on_tg_token(slot.id);
+
+                    if (!process_token(result, slot)) {
+                        slot.print_timings();
+                        send_final_response(slot);
+                        metrics.on_tg_done(slot.id, slot.t_token_generation);
+                        slot.release();
+
+                        break;
+                    }
+                }
+
+                slot.print_timings_tg();
+
+                SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
+            }
+        }
+
+        SRV_DBG("%s", "run slots completed\n");
     }
 
     int get_slot_n_ctx() {
@@ -4350,108 +4412,38 @@ void server_routes::init_routes() {
         return res;
     };
 
-    this->get_metrics = [this](const server_http_req & req) {
+    // Non-blocking: all values read lock-free from server_metrics.
+    // No task-queue round-trip — /metrics never stalls during long decodes.
+    this->get_metrics = [this](const server_http_req & /* req */) {
         auto res = create_response();
         if (!params.endpoint_metrics) {
             res->error(format_error_response("This server does not support metrics endpoint. Start it with `--metrics`", ERROR_TYPE_NOT_SUPPORTED));
             return res;
         }
-
-        // request slots data using task queue
-        {
-            server_task task(SERVER_TASK_TYPE_METRICS);
-            task.id = res->rd.get_new_id();
-            res->rd.post_task(std::move(task), true); // high-priority task
-        }
-
-        // get the result
-        auto result = res->rd.next(req.should_stop);
-        if (!result) {
-            // connection was closed
-            GGML_ASSERT(req.should_stop());
-            return res;
-        }
-
-        if (result->is_error()) {
-            res->error(result->to_json());
-            return res;
-        }
-
-        // TODO: get rid of this dynamic_cast
-        auto res_task = dynamic_cast<server_task_result_metrics*>(result.get());
-        GGML_ASSERT(res_task != nullptr);
-
-        // metrics definition: https://prometheus.io/docs/practices/naming/#metric-names
-        json all_metrics_def = json {
-            {"counter", {{
-                    {"name",  "prompt_tokens_total"},
-                    {"help",  "Number of prompt tokens processed."},
-                    {"value",  (uint64_t) res_task->n_prompt_tokens_processed_total}
-            }, {
-                    {"name",  "prompt_seconds_total"},
-                    {"help",  "Prompt process time"},
-                    {"value",  (uint64_t) res_task->t_prompt_processing_total / 1.e3}
-            }, {
-                    {"name",  "tokens_predicted_total"},
-                    {"help",  "Number of generation tokens processed."},
-                    {"value",  (uint64_t) res_task->n_tokens_predicted_total}
-            }, {
-                    {"name",  "tokens_predicted_seconds_total"},
-                    {"help",  "Predict process time"},
-                    {"value",  (uint64_t) res_task->t_tokens_generation_total / 1.e3}
-            }, {
-                    {"name",  "n_decode_total"},
-                    {"help",  "Total number of llama_decode() calls"},
-                    {"value",  res_task->n_decode_total}
-            }, {
-                    {"name",  "n_tokens_max"},
-                    {"help",  "Largest observed n_tokens."},
-                    {"value",  res_task->n_tokens_max}
-            }}},
-            {"gauge", {{
-                    {"name",  "prompt_tokens_seconds"},
-                    {"help",  "Average prompt throughput in tokens/s."},
-                    {"value",  res_task->n_prompt_tokens_processed ? 1.e3 / res_task->t_prompt_processing * res_task->n_prompt_tokens_processed : 0.}
-            },{
-                    {"name",  "predicted_tokens_seconds"},
-                    {"help",  "Average generation throughput in tokens/s."},
-                    {"value",  res_task->n_tokens_predicted ? 1.e3 / res_task->t_tokens_generation * res_task->n_tokens_predicted : 0.}
-            },{
-                    {"name",  "requests_processing"},
-                    {"help",  "Number of requests processing."},
-                    {"value",  (uint64_t) res_task->n_processing_slots}
-            },{
-                    {"name",  "requests_deferred"},
-                    {"help",  "Number of requests deferred."},
-                    {"value",  (uint64_t) res_task->n_tasks_deferred}
-            },{
-                    {"name",  "n_busy_slots_per_decode"},
-                    {"help",  "Average number of busy slots per llama_decode() call"},
-                    {"value",  (float) res_task->n_busy_slots_total / std::max((float) res_task->n_decode_total, 1.f)}
-            }}}
-        };
-
-        std::stringstream prometheus;
-
-        for (const auto & el : all_metrics_def.items()) {
-            const auto & type        = el.key();
-            const auto & metrics_def = el.value();
-
-            for (const auto & metric_def : metrics_def) {
-                const std::string name = metric_def.at("name");
-                const std::string help = metric_def.at("help");
-
-                auto value = json_value(metric_def, "value", 0.);
-                prometheus << "# HELP llamacpp:" << name << " " << help  << "\n"
-                            << "# TYPE llamacpp:" << name << " " << type  << "\n"
-                            << "llamacpp:"        << name << " " << value << "\n";
-            }
-        }
-
-        res->headers["Process-Start-Time-Unix"] = std::to_string(res_task->t_start);
+        res->headers["Process-Start-Time-Unix"] = std::to_string(ctx_server.metrics.t_start);
         res->content_type = "text/plain; version=0.0.4";
         res->status = 200;
-        res->data = prometheus.str();
+        res->data = ctx_server.metrics.to_prometheus();
+        return res;
+    };
+
+    // POST /metrics — optional reset of global counters.
+    // Body: {"reset": true}  (any other body is a no-op but still returns 200).
+    this->post_metrics = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (!params.endpoint_metrics) {
+            res->error(format_error_response("This server does not support metrics endpoint. Start it with `--metrics`", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+        try {
+            const json body = json::parse(req.body);
+            if (body.value("reset", false)) {
+                ctx_server.metrics.reset_global();
+            }
+        } catch (...) {
+            // ignore malformed body — treat as no-op
+        }
+        res->ok({{"status", "ok"}});
         return res;
     };
 
