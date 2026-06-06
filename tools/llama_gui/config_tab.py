@@ -75,6 +75,9 @@ SECTIONS = [
                              'metrics', 'props', 'slots'])]),
     ('Embedding', [
         'pooling', 'attention']),
+    ('Log', [
+        'log_file', 'log_colors', 'log_verbosity',
+        'log_prefix', 'log_timestamps', 'log_disable']),
 ]
 
 
