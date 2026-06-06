@@ -30,16 +30,16 @@ class MetricsChart(ttk.Frame):
     C_PROMPT     = '#4e9eff'
     C_GEN        = '#4ec94e'
     C_DRAFT      = '#ffaa44'
-    C_DRAFT_GEN  = '#ff8844'   # draft tokens generated line
-    C_DRAFT_ACC  = '#44cc88'   # draft tokens accepted line
+    C_DRAFT_GEN  = '#4e9eff'   # draft tokens generated line (matches PP blue)
+    C_DRAFT_ACC  = '#ffcc00'   # draft tokens accepted line
     C_TEXT       = '#aaaaaa'
     C_RULE       = '#ffffff'   # vertical crosshair line
     C_HOVER_TEXT = '#ffffff'   # value label foreground
     C_HOVER_SHADOW = '#000000' # value label drop-shadow
 
     # Panel order and height weights (higher = taller)
-    _PANEL_ORDER  = ('pp', 'tg', 'draft_pct', 'draft_tokens')
-    _PANEL_WEIGHT = {'pp': 2, 'tg': 2, 'draft_pct': 1, 'draft_tokens': 1}
+    _PANEL_ORDER  = ('pp', 'tg', 'draft_pct')
+    _PANEL_WEIGHT = {'pp': 2, 'tg': 2, 'draft_pct': 1}
 
     _PALETTE = {
         'dark': {
@@ -178,26 +178,33 @@ class MetricsChart(ttk.Frame):
                 max_val = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
                 self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
                                 fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
-                c.create_text(6, (y0 + y1) // 2, text='pp', angle=90,
+                c.create_text(6, (y0 + y1) // 2, text='PP tok/s', angle=90,
                               fill=self.C_AXIS, font=('Consolas', 7))
-                c.create_text(x1 - 4, y0 + 8, text='PP tok/s', anchor='e',
+                c.create_text(x1 - 4, y0 + 8, text='PP', anchor='e',
                               fill=self.C_PROMPT, font=('Consolas', 7))
 
             elif key == 'tg':
                 max_val = self._nice_ceil(max(self._gen)) if self._gen else 10.0
+                all_dt  = self._draft_gen + self._draft_acc + self._gen
+                max_dt  = self._nice_ceil(max(all_dt)) if all_dt else 10.0
+                max_val = max(max_val, max_dt)
                 self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
                                 fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
-                c.create_text(6, (y0 + y1) // 2, text='tg', angle=90,
+                c.create_text(6, (y0 + y1) // 2, text='TG tok/s', angle=90,
                               fill=self.C_AXIS, font=('Consolas', 7))
-                c.create_text(x1 - 4, y0 + 8, text='TG tok/s', anchor='e',
+                c.create_text(x1 - 4, y0 + 8, text='TG', anchor='e',
                               fill=self.C_GEN, font=('Consolas', 7))
+                c.create_text(x1 - 4, y0 + 18, text='DG', anchor='e',
+                              fill=self.C_DRAFT_GEN, font=('Consolas', 7))
+                c.create_text(x1 - 4, y0 + 28, text='DA', anchor='e',
+                              fill=self.C_DRAFT_ACC, font=('Consolas', 7))
 
             elif key == 'draft_pct':
                 self._draw_grid(c, x0, y0, x1, y1, ml, 100.0, n_gl,
                                 fmt=lambda v: f'{v:.0f}%')
-                c.create_text(6, (y0 + y1) // 2, text='draft', angle=90,
+                c.create_text(6, (y0 + y1) // 2, text='Draft %', angle=90,
                               fill=self.C_AXIS, font=('Consolas', 7))
-                c.create_text(x1 - 4, y0 + 8, text='Draft %', anchor='e',
+                c.create_text(x1 - 4, y0 + 8, text='Draft', anchor='e',
                               fill=self.C_DRAFT, font=('Consolas', 7))
 
             elif key == 'draft_tokens':
@@ -241,22 +248,18 @@ class MetricsChart(ttk.Frame):
 
         if 'tg' in rects:
             r = rects['tg']
-            max_tg = self._nice_ceil(max(self._gen)) if self._gen else 10.0
-            draw_line(self._gen, self.C_GEN, make_to_y(r[1], r[3], max_tg))
+            all_vals = self._gen + self._draft_gen + self._draft_acc
+            max_tg = self._nice_ceil(max(all_vals)) if all_vals else 10.0
+            to_y_tg = make_to_y(r[1], r[3], max_tg)
+            draw_line(self._gen, self.C_GEN, to_y_tg)
+            n_dt = len(self._draft_gen)
+            if n_dt >= 2:
+                draw_line(self._draft_gen, self.C_DRAFT_GEN, to_y_tg)
+                draw_line(self._draft_acc, self.C_DRAFT_ACC, to_y_tg)
 
         if 'draft_pct' in rects:
             r = rects['draft_pct']
             draw_line(self._draft, self.C_DRAFT, make_to_y(r[1], r[3], 100.0))
-
-        if 'draft_tokens' in rects:
-            r = rects['draft_tokens']
-            all_dt = self._draft_gen + self._draft_acc
-            max_dt = self._nice_ceil(max(all_dt)) if all_dt else 10.0
-            to_y_dt = make_to_y(r[1], r[3], max_dt)
-            n_dt = len(self._draft_gen)
-            if n_dt >= 2:
-                draw_line(self._draft_gen, self.C_DRAFT_GEN, to_y_dt)
-                draw_line(self._draft_acc, self.C_DRAFT_ACC, to_y_dt)
 
         self._draw_hover()
 
@@ -345,25 +348,21 @@ class MetricsChart(ttk.Frame):
                                x0, py0, x1, py1, max_pp)
 
             elif key == 'tg':
-                max_tg = self._nice_ceil(max(self._gen)) if self._gen else 10.0
+                all_vals = self._gen + self._draft_gen + self._draft_acc
+                max_tg = self._nice_ceil(max(all_vals)) if all_vals else 10.0
+                fmt_dt = lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k'
                 draw_dot_label(interp(self._gen), self.C_GEN,
-                               lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k',
-                               x0, py0, x1, py1, max_tg)
+                               fmt_dt, x0, py0, x1, py1, max_tg)
+                if len(self._draft_gen) > 1:
+                    draw_dot_label(interp(self._draft_gen), self.C_DRAFT_GEN,
+                                   fmt_dt, x0, py0, x1, py1, max_tg, y_offset=16)
+                    draw_dot_label(interp(self._draft_acc), self.C_DRAFT_ACC,
+                                   fmt_dt, x0, py0, x1, py1, max_tg, y_offset=28)
 
             elif key == 'draft_pct':
                 draw_dot_label(interp(self._draft), self.C_DRAFT,
                                lambda v: f'{v:.1f}%',
                                x0, py0, x1, py1, 100.0)
-
-            elif key == 'draft_tokens':
-                all_dt = self._draft_gen + self._draft_acc
-                max_dt = self._nice_ceil(max(all_dt)) if all_dt else 10.0
-                fmt_dt = lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.2f}k'
-                if len(self._draft_gen) > 1:
-                    draw_dot_label(interp(self._draft_gen), self.C_DRAFT_GEN,
-                                   fmt_dt, x0, py0, x1, py1, max_dt, y_offset=0)
-                    draw_dot_label(interp(self._draft_acc), self.C_DRAFT_ACC,
-                                   fmt_dt, x0, py0, x1, py1, max_dt, y_offset=12)
 
     def _draw_grid(self, c, x0, y0, x1, y1, ml, max_val, n, fmt):
         """Draw horizontal grid lines and Y-axis labels for one graph."""
@@ -410,6 +409,14 @@ class MonitorTab(ttk.Frame):
         self._slot_ctx_tokens: dict = {}     # slot_id -> latest print_timing n_tokens
         self._slot_ctx_checkpoint: dict = {} # slot_id -> latest create_check n_tokens
         self._n_ctx_fallback = 0         # populated from prometheus n_ctx_size / n_slots
+        # Event-based rate tracking (from /metrics n_tokens_pp/tg/td/tda/tdr counters)
+        self._prev_pp_total = 0.0
+        self._prev_tg_total = 0.0
+        self._prev_td_total = 0.0
+        self._prev_tda_total = 0.0
+        self._prev_tdr_total = 0.0
+        self._prev_metrics_time = 0.0
+        self._using_event_metrics = False
         # Raw sample buffers: (monotonic_time, value) tuples.
         # maxlen covers ~10 min at fastest realistic poll rate (1 Hz) — plenty.
         _MAX_RAW = 600
@@ -454,8 +461,6 @@ class MonitorTab(ttk.Frame):
         self._lbl_gen_tps.pack(fill='x', pady=1)
         self._lbl_draft = ttk.Label(sm_frame, text='Draft: --%')
         self._lbl_draft.pack(fill='x', pady=1)
-        self._lbl_draft_tokens = ttk.Label(sm_frame, text='Draft tok: --/--')
-        self._lbl_draft_tokens.pack(fill='x', pady=1)
         self._lbl_graphs = ttk.Label(sm_frame, text='Graphs: --')
         self._lbl_graphs.pack(fill='x', pady=1)
         self._lbl_status = ttk.Label(sm_frame, text='Status: Idle',
@@ -668,14 +673,56 @@ class MonitorTab(ttk.Frame):
 
     def _apply_metrics(self, parsed):
         now = time.monotonic()
-        if parsed.get('prompt_tokens_seconds', 0) > 0:
-            val = parsed['prompt_tokens_seconds']
-            self._raw_prompt.append((now, val))
-            self._lbl_prompt_tps.config(text=f'Prompt: {val:.1f} tok/s')
-        if parsed.get('predicted_tokens_seconds', 0) > 0:
-            val = parsed['predicted_tokens_seconds']
-            self._raw_gen.append((now, val))
-            self._lbl_gen_tps.config(text=f'Gen: {val:.1f} tok/s')
+        # Detect monotonic counters from /metrics Prometheus output.
+        # After stripping the "llamacpp:" prefix, the server names are:
+        #   prompt_tokens_total, tokens_predicted_total, n_tokens_draft, ...
+        pp_total = parsed.get('prompt_tokens_total')
+        tg_total = parsed.get('tokens_predicted_total')
+        td_total = parsed.get('n_tokens_draft')
+
+        if pp_total is not None and tg_total is not None and td_total is not None:
+            tda_total = parsed.get('n_tokens_draft_accepted', 0)
+            tdr_total = parsed.get('n_tokens_draft_rejected', 0)
+
+            if self._prev_metrics_time > 0:
+                dt = now - self._prev_metrics_time
+                if dt > 0.001:
+                    # Reset on counter rollover
+                    if pp_total < self._prev_pp_total or tg_total < self._prev_tg_total:
+                        self._prev_pp_total = 0.0
+                        self._prev_tg_total = 0.0
+                        self._prev_td_total = 0.0
+                        self._prev_tda_total = 0.0
+                        self._prev_tdr_total = 0.0
+
+                    if pp_total >= self._prev_pp_total and tg_total >= self._prev_tg_total:
+                        pp_rate  = (pp_total  - self._prev_pp_total)  / dt
+                        tg_rate  = (tg_total  - self._prev_tg_total)  / dt
+                        td_rate  = (td_total  - self._prev_td_total)  / dt
+                        tda_rate = (tda_total - self._prev_tda_total) / dt
+                        tdr_rate = (tdr_total - self._prev_tdr_total) / dt
+
+                        self._raw_prompt.append((now, pp_rate))
+                        self._raw_gen.append((now, tg_rate))
+                        self._lbl_prompt_tps.config(text=f'Prompt: {pp_rate:.1f} tok/s')
+                        self._lbl_gen_tps.config(text=f'Gen: {tg_rate:.1f} tok/s')
+
+                        self._raw_draft_gen.append((now, td_rate))
+                        self._raw_draft_acc.append((now, tda_rate))
+
+                        total_rej = tda_rate + tdr_rate
+                        pct = min(100.0, tda_rate / total_rej * 100) if total_rej > 0 else 0.0
+                        self._raw_draft.append((now, max(0.0, pct)))
+
+                        self._lbl_draft.config(text=f'Draft: {pct:.1f}%')
+
+            self._prev_pp_total = pp_total
+            self._prev_tg_total = tg_total
+            self._prev_td_total = td_total
+            self._prev_tda_total = tda_total
+            self._prev_tdr_total = tdr_total
+            self._prev_metrics_time = now
+            self._using_event_metrics = True
 
         n_ctx_size = int(parsed.get('n_ctx_size', 0))
         if n_ctx_size > 0:
@@ -838,22 +885,20 @@ class MonitorTab(ttk.Frame):
     def update_from_metrics(self, metrics):
         """Update raw sample buffers from log parser events."""
         now = time.monotonic()
-        if metrics.prompt_per_second > 0:
+        if not self._using_event_metrics and metrics.prompt_per_second > 0:
             self._raw_prompt.append((now, metrics.prompt_per_second))
             self._lbl_prompt_tps.config(
                 text=f'Prompt: {metrics.prompt_per_second:.1f} tok/s')
-        if metrics.gen_per_second > 0:
+        if not self._using_event_metrics and metrics.gen_per_second > 0:
             self._raw_gen.append((now, metrics.gen_per_second))
             self._lbl_gen_tps.config(
                 text=f'Gen: {metrics.gen_per_second:.1f} tok/s')
-        if metrics.draft_acceptance_rate > 0 or metrics.draft_total > 0:
+        if not self._using_event_metrics and (metrics.draft_acceptance_rate > 0 or metrics.draft_total > 0):
             pct = metrics.draft_acceptance_rate * 100
             self._raw_draft.append((now, pct))
             self._lbl_draft.config(text=f'Draft: {pct:.1f}%')
             self._raw_draft_gen.append((now, float(metrics.draft_total)))
             self._raw_draft_acc.append((now, float(metrics.draft_accepted)))
-            self._lbl_draft_tokens.config(
-                text=f'Draft tok: {metrics.draft_accepted}/{metrics.draft_total}')
         if metrics.graphs_reused > 0:
             self._lbl_graphs.config(
                 text=f'Graphs: {metrics.graphs_reused} reused')

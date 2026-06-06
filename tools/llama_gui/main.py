@@ -461,7 +461,7 @@ class MainWindow:
         ttk.Label(dlg, text='Metrics sample (ms):').grid(
             row=3, column=0, sticky='w', **pad)
         metrics_var = tk.StringVar(value=str(self.monitor_tab._metrics_sample_ms))
-        ttk.Spinbox(dlg, from_=1000, to=60000, increment=1000,
+        ttk.Spinbox(dlg, from_=100, to=60000, increment=100,
                      textvariable=metrics_var, width=8).grid(
             row=3, column=1, sticky='w', **pad)
 
@@ -544,7 +544,7 @@ class MainWindow:
             except ValueError:
                 pass
             try:
-                self.monitor_tab._metrics_sample_ms = max(1000, int(metrics_var.get()))
+                self.monitor_tab._metrics_sample_ms = max(100, int(metrics_var.get()))
             except ValueError:
                 pass
             try:
