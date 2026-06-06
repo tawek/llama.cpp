@@ -990,6 +990,19 @@ extern "C" {
     // Set abort callback
     LLAMA_API void llama_set_abort_callback(struct llama_context * ctx, ggml_abort_callback abort_callback, void * abort_callback_data);
 
+    // Callback invoked after each micro-batch (ubatch) is decoded during a prompt
+    // (non-generation) llama_decode() call.  Fires on the calling thread, synchronously,
+    // with the decode loop blocked — keep the callback short.
+    // n_tokens: number of tokens processed in the just-completed ubatch.
+    // user_data: opaque pointer supplied to llama_set_pp_eval_callback().
+    typedef void (*llama_pp_eval_callback)(uint32_t n_tokens, void * user_data);
+
+    // Register a per-ubatch prompt-processing callback on ctx.  Pass NULL to clear.
+    LLAMA_API void llama_set_pp_eval_callback(
+            struct llama_context  * ctx,
+            llama_pp_eval_callback  callback,
+            void                  * user_data);
+
     // Wait until all computations are finished
     // This is automatically done when using one of the functions below to obtain the computation results
     // and is not necessary to call it explicitly in most cases

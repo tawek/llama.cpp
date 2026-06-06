@@ -1129,6 +1129,11 @@ void llama_context::set_abort_callback(bool (*abort_callback)(void * data), void
     }
 }
 
+void llama_context::set_pp_eval_callback(llama_pp_eval_callback callback, void * user_data) {
+    pp_eval_callback      = callback;
+    pp_eval_callback_data = user_data;
+}
+
 void llama_context::set_embeddings(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -1997,6 +2002,11 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
         n_outputs_prev += n_outputs;
         n_tokens_prev  += ubatch.n_tokens;
+
+        // notify the server (or any caller) that a prompt ubatch just completed
+        if (pp_eval_callback && n_outputs_all < n_tokens_all) {
+            pp_eval_callback(ubatch.n_tokens, pp_eval_callback_data);
+        }
     } while (mctx->next());
 
     // set to total number of outputs in the batch, for use in llama_get_logits_ith
@@ -3639,6 +3649,10 @@ int32_t llama_n_threads_batch(llama_context * ctx) {
 
 void llama_set_abort_callback(llama_context * ctx, bool (*abort_callback)(void * data), void * abort_callback_data) {
     ctx->set_abort_callback(abort_callback, abort_callback_data);
+}
+
+void llama_set_pp_eval_callback(llama_context * ctx, llama_pp_eval_callback callback, void * user_data) {
+    ctx->set_pp_eval_callback(callback, user_data);
 }
 
 void llama_set_embeddings(llama_context * ctx, bool embeddings) {
