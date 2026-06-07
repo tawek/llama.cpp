@@ -3365,6 +3365,7 @@ private:
                         }
 
                         slot.n_prompt_tokens_processed += n_tokens_out;
+                        metrics.on_pp_tokens_slot(slot.id, (uint32_t) n_tokens_out);
 
                         // add the image chunk to cache
                         {
@@ -3404,6 +3405,7 @@ private:
                         slot.prompt.tokens.push_back(cur_tok);
 
                         slot.n_prompt_tokens_processed++;
+                        metrics.on_pp_tokens_slot(slot.id, 1);
 
                         // stop the prompt batch exactly before a user message
                         if (spans.is_user_start(slot.prompt.n_tokens())) {

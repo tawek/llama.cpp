@@ -99,6 +99,9 @@ struct server_metrics {
     // From llama_pp_eval_callback — no slot_id (ubatch may span several slots).
     void on_pp_tokens(uint32_t n);
 
+    // Incremental per-slot prompt tokens processed during PP (real-time tracking).
+    void on_pp_tokens_slot(int slot_id, uint32_t n);
+
     // Called when the first generation token appears for a slot (prompt eval done).
     //   t_ms         = slot.t_prompt_processing
     //   prompt_len   = slot.prompt.n_tokens()

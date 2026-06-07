@@ -60,6 +60,10 @@ void server_metrics::on_pp_tokens(uint32_t n) {
     n_pp.fetch_add(n, std::memory_order_relaxed);
 }
 
+void server_metrics::on_pp_tokens_slot(int slot_id, uint32_t n) {
+    slot(slot_id).n_pp.fetch_add(n, std::memory_order_relaxed);
+}
+
 void server_metrics::on_pp_eval(int slot_id, double t_ms, uint64_t prompt_len) {
     t_pp_ms.fetch_add((uint64_t) t_ms, std::memory_order_relaxed);
     bump_tokens_max(prompt_len);
