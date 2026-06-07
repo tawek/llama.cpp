@@ -9,6 +9,7 @@
 
 void server_slot_metrics::reset() {
     n_pp            .store(0, std::memory_order_relaxed);
+    n_prompt_length .store(0, std::memory_order_relaxed);
     t_pp_ms         .store(0, std::memory_order_relaxed);
     n_tg            .store(0, std::memory_order_relaxed);
     t_tg_ms         .store(0, std::memory_order_relaxed);
@@ -59,13 +60,16 @@ void server_metrics::on_pp_tokens(uint32_t n) {
     n_pp.fetch_add(n, std::memory_order_relaxed);
 }
 
-void server_metrics::on_pp_eval(int slot_id, uint64_t n_processed, double t_ms, uint64_t prompt_len) {
+void server_metrics::on_pp_eval(int slot_id, double t_ms, uint64_t prompt_len) {
     t_pp_ms.fetch_add((uint64_t) t_ms, std::memory_order_relaxed);
     bump_tokens_max(prompt_len);
 
     auto & s = slot(slot_id);
-    s.n_pp  .store(n_processed,        std::memory_order_relaxed);
-    s.t_pp_ms.store((uint64_t) t_ms,   std::memory_order_relaxed);
+    // n_pp = total prompt length (includes cache hits), so it matches
+    // n_prompt_length when prompt eval completes.
+    s.n_pp           .store(prompt_len, std::memory_order_relaxed);
+    s.n_prompt_length.store(prompt_len, std::memory_order_relaxed);
+    s.t_pp_ms        .store((uint64_t) t_ms,  std::memory_order_relaxed);
 }
 
 void server_metrics::on_tg_token(int slot_id) {
@@ -214,12 +218,13 @@ std::string server_metrics::to_prometheus() const {
     if (n_slots_ > 0) {
         // Snapshot all slot values first.
         struct SlotSnap {
-            uint64_t n_pp, t_pp_ms, n_tg, t_tg_ms, n_draft, n_draft_accepted, n_draft_rejected;
+            uint64_t n_pp, n_prompt_length, t_pp_ms, n_tg, t_tg_ms, n_draft, n_draft_accepted, n_draft_rejected;
         };
         std::vector<SlotSnap> snaps(n_slots_);
         for (int i = 0; i < n_slots_; ++i) {
             const auto & s = slot(i);
             snaps[i].n_pp             = s.n_pp            .load(std::memory_order_relaxed);
+            snaps[i].n_prompt_length  = s.n_prompt_length .load(std::memory_order_relaxed);
             snaps[i].t_pp_ms          = s.t_pp_ms         .load(std::memory_order_relaxed);
             snaps[i].n_tg             = s.n_tg            .load(std::memory_order_relaxed);
             snaps[i].t_tg_ms          = s.t_tg_ms         .load(std::memory_order_relaxed);
@@ -250,8 +255,11 @@ std::string server_metrics::to_prometheus() const {
         };
 
         emit_labeled("gauge", "slot_prompt_tokens_processed",
-                     "Prompt tokens processed for the current/last task per slot.",
+                     "Prompt tokens processed for the current/last task per slot. Reaches slot_prompt_length when prompt eval is done.",
                      "id_slot", irows(&SlotSnap::n_pp));
+        emit_labeled("gauge", "slot_prompt_length",
+                     "Original prompt length as passed to the server per slot.",
+                     "id_slot", irows(&SlotSnap::n_prompt_length));
         emit_labeled("gauge", "slot_prompt_seconds",
                      "Prompt processing time (s) for the current/last task per slot.",
                      "id_slot", trows(&SlotSnap::t_pp_ms));

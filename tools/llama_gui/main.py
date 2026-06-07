@@ -236,7 +236,7 @@ class MainWindow:
 
         # Connect dependencies
         self.monitor_tab.set_dependencies(self.api, self.sys_monitor, self.process)
-        self.logs_tab._on_metrics_update = self.monitor_tab.update_from_metrics
+        self.logs_tab._on_metrics_update = None  # log-parser path replaced by /metrics + /slots
 
     def _build_statusbar(self):
         self._statusbar = ttk.Frame(self.root)

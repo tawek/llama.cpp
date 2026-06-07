@@ -639,10 +639,11 @@ struct server_slot {
         json res;
 
         res = {
-            {"id",            id},
-            {"n_ctx",         n_ctx},
-            {"speculative",   can_speculate()},
-            {"is_processing", is_processing()},
+            {"id",                      id},
+            {"n_ctx",                   n_ctx},
+            {"speculative",             can_speculate()},
+            {"is_processing",           is_processing()},
+            {"n_prompt_tokens_processed", n_prompt_tokens_processed},
         };
 
         const auto & ptask = task ? task : task_prev;
@@ -653,6 +654,7 @@ struct server_slot {
             res["n_prompt_tokens_processed"] = n_prompt_tokens_processed;
             res["n_prompt_tokens_cache"]     = n_prompt_tokens_cache;
             res["params"] = ptask->params.to_json(only_metrics);
+            res["n_prompt_length"] = (uint64_t) ptask->n_tokens();
             res["next_token"] = {
                 {
                     {"has_next_token", has_next_token},
@@ -3848,7 +3850,6 @@ private:
                     slot.n_decoded_last = 0;
                     slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
                     metrics.on_pp_eval(slot.id,
-                                       slot.n_prompt_tokens_processed,
                                        slot.t_prompt_processing,
                                        (uint64_t) slot.prompt.n_tokens());
                 }

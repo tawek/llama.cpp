@@ -4,6 +4,7 @@ Polls /slots, /metrics, /props endpoints and system_monitor.
 """
 
 import math
+import re
 import time
 import threading
 from collections import deque
@@ -399,15 +400,15 @@ class MonitorTab(ttk.Frame):
         self._sys_monitor = None
         self._process_mgr = None
         self._refresh_ms = 2000
-        self._metrics_sample_ms = 5000   # prometheus /metrics probe cadence
+        self._metrics_sample_ms = 2000   # prometheus /metrics probe cadence (matches /slots)
         self._after_id = None
         self._metrics_after_id = None    # independent prometheus loop
         self._metrics = {}
         self._slot_widgets = {}          # slot_id -> dict of widgets
         self._slot_last_proc: dict = {}  # slot_id -> monotonic time last seen processing
-        self._slot_n_ctx: dict = {}      # slot_id -> last known n_ctx (max, from load_model log)
-        self._slot_ctx_tokens: dict = {}     # slot_id -> latest print_timing n_tokens
-        self._slot_ctx_checkpoint: dict = {} # slot_id -> latest create_check n_tokens
+        self._slot_n_ctx: dict = {}      # slot_id -> last known n_ctx
+        self._slot_bar_data: dict = {}   # slot_id -> {n_prompt_length, n_prompt_tokens_processed, n_decoded, n_ctx}
+        self._slot_prompt_length: dict = {}  # slot_id -> cached original prompt length (persists across polls)
         self._n_ctx_fallback = 0         # populated from prometheus n_ctx_size / n_slots
         # Event-based rate tracking (from /metrics n_tokens_pp/tg/td/tda/tdr counters)
         self._prev_pp_total = 0.0
@@ -496,9 +497,9 @@ class MonitorTab(ttk.Frame):
         ttk.Label(hdr, text='#',     width=4,  anchor='w').grid(row=0, column=0, padx=(0, 2))
         ttk.Label(hdr, text='State', width=5,  anchor='w').grid(row=0, column=1, padx=(0, 2))
         ttk.Label(hdr, text='',                anchor='w').grid(row=0, column=2, sticky='ew', padx=(0, 4))
-        ttk.Label(hdr, text='ckpt',  width=4,  anchor='e').grid(row=0, column=3, padx=2)
-        ttk.Label(hdr, text='proc',  width=4,  anchor='e').grid(row=0, column=4, padx=2)
-        ttk.Label(hdr, text='ctx',   width=4,  anchor='e').grid(row=0, column=5, padx=(2, 4))
+        ttk.Label(hdr, text='pp',  width=4,  anchor='e').grid(row=0, column=3, padx=2)
+        ttk.Label(hdr, text='gen', width=4,  anchor='e').grid(row=0, column=4, padx=2)
+        ttk.Label(hdr, text='max', width=4,  anchor='e').grid(row=0, column=5, padx=(2, 4))
         hdr.columnconfigure(2, weight=1)
         self._slots_hdr_frame = hdr
 
@@ -729,6 +730,42 @@ class MonitorTab(ttk.Frame):
             n_slots = max(len(self._slot_widgets), 1)
             self._n_ctx_fallback = n_ctx_size // n_slots
 
+        # ── Per-slot values from labeled Prometheus metrics ──────────────────
+        # Keys look like:  slot_prompt_tokens_processed{id_slot="3"}
+        slot_label_pat = re.compile(r'^slot_(\w+)\{id_slot="(\d+)"\}$')
+        slot_values = {}  # sid -> {metric_name: int_value}
+        for key, value in parsed.items():
+            m = slot_label_pat.match(key)
+            if m:
+                metric = m.group(1)
+                sid = int(m.group(2))
+                slot_values.setdefault(sid, {})[metric] = int(value)
+
+        for sid, vals in slot_values.items():
+            if sid not in self._slot_widgets:
+                self._create_slot_row(sid)
+
+            pp   = vals.get('prompt_tokens_processed', 0)
+            plen = vals.get('prompt_length', 0)
+            gen  = vals.get('tokens_predicted', 0)
+            n_ctx = self._slot_n_ctx.get(sid, self._n_ctx_fallback) or 1
+
+            # Cache prompt length so it survives task release
+            if plen > 0:
+                self._slot_prompt_length[sid] = plen
+            cached_plen = self._slot_prompt_length.get(sid, 0)
+
+            self._slot_bar_data[sid] = {
+                'n_prompt_length':          max(cached_plen, plen),
+                'n_prompt_tokens_processed': pp,
+                'n_decoded':                gen,
+                'n_ctx':                    n_ctx,
+            }
+            self._redraw_slot_bar(sid)
+
+            w = self._slot_widgets[sid]
+            self._set_slot_ctx_cells(w, pp, gen, n_ctx)
+
     def _apply_slots(self, slots_data):
         if slots_data is None:
             self._slots_header.config(text='Idle: -- | Processing: --')
@@ -746,7 +783,22 @@ class MonitorTab(ttk.Frame):
             seen.add(sid)
             if sid not in self._slot_widgets:
                 self._create_slot_row(sid)
-            self._update_slot_row(sid, slot)
+
+            # Cache n_ctx per slot
+            n_ctx = slot.get('n_ctx', 0)
+            if n_ctx > 0:
+                self._slot_n_ctx[sid] = n_ctx
+
+            # Sticky PROC: keep showing for 5 s after last seen processing
+            is_proc = slot.get('is_processing', False)
+            if is_proc:
+                self._slot_last_proc[sid] = time.monotonic()
+            show_proc = is_proc or (time.monotonic() - self._slot_last_proc.get(sid, 0) < 5.0)
+
+            w = self._slot_widgets[sid]
+            w['lbl_state'].config(
+                text='PROC' if show_proc else 'IDLE',
+                foreground='green' if show_proc else 'gray')
 
         for sid in list(self._slot_widgets):
             if sid not in seen:
@@ -762,77 +814,87 @@ class MonitorTab(ttk.Frame):
         lbl_state = ttk.Label(f, text='IDLE', width=5, anchor='w')
         lbl_state.grid(row=0, column=1, padx=(0, 2))
 
-        bar = ttk.Progressbar(f, maximum=100, mode='determinate')
-        bar.grid(row=0, column=2, sticky='ew', padx=(0, 4))
+        canvas = tk.Canvas(f, height=20, highlightthickness=0)
+        canvas.grid(row=0, column=2, sticky='ew', padx=(0, 4))
+        canvas.bind('<Configure>', lambda e, s=sid: self._redraw_slot_bar(s))
 
-        lbl_ckpt  = ttk.Label(f, text='', width=4, anchor='e')
-        lbl_since = ttk.Label(f, text='', width=4, anchor='e')
-        lbl_max   = ttk.Label(f, text='', width=4, anchor='e')
-        lbl_ckpt.grid( row=0, column=3, padx=2)
-        lbl_since.grid(row=0, column=4, padx=2)
-        lbl_max.grid(  row=0, column=5, padx=(2, 4))
+        lbl_pp   = ttk.Label(f, text='', width=4, anchor='e')
+        lbl_gen  = ttk.Label(f, text='', width=4, anchor='e')
+        lbl_max  = ttk.Label(f, text='', width=4, anchor='e')
+        lbl_pp.grid( row=0, column=3, padx=2)
+        lbl_gen.grid(row=0, column=4, padx=2)
+        lbl_max.grid( row=0, column=5, padx=(2, 4))
 
         f.columnconfigure(2, weight=1)
 
         self._slot_widgets[sid] = {
             'frame':     f,
             'lbl_state': lbl_state,
-            'bar':       bar,
-            'lbl_ckpt':  lbl_ckpt,
-            'lbl_since': lbl_since,
+            'canvas':    canvas,
+            'lbl_pp':    lbl_pp,
+            'lbl_gen':   lbl_gen,
             'lbl_max':   lbl_max,
         }
 
     @staticmethod
     def _kt(v: int) -> str:
-        """Integer kTokens, no suffix."""
-        return str(round(v / 1000)) if v else ''
+        """Integer in kTokens as a fixed-width 4-char label."""
+        return str(round(v / 1000))
 
-    def _set_slot_ctx_cells(self, w, ckpt: int, since: int, n_ctx: int, pct: float):
-        w['lbl_ckpt'].config(text=self._kt(ckpt))
-        w['lbl_since'].config(text=self._kt(since))
-        w['lbl_max'].config(text=self._kt(n_ctx) if n_ctx else '?')
-        w['bar']['value'] = pct
+    def _set_slot_ctx_cells(self, w, n_pp: int, n_gen: int, n_max: int):
+        w['lbl_pp' ].config(text=self._kt(n_pp))
+        w['lbl_gen'].config(text=self._kt(n_gen))
+        w['lbl_max'].config(text=self._kt(n_max))
 
-    def _update_slot_row(self, sid, slot):
-        w = self._slot_widgets[sid]
-        is_proc = slot.get('is_processing', False)
+    def _redraw_slot_bar(self, sid):
+        """Redraw the multi-colored slot progress bar on the slot's canvas."""
+        w = self._slot_widgets.get(sid)
+        if not w:
+            return
+        canvas = w.get('canvas')
+        if not canvas:
+            return
 
-        # n_ctx (max): cache first non-zero; fall back to prometheus estimate
-        n_ctx = slot.get('n_ctx', 0)
-        if n_ctx > 0:
-            self._slot_n_ctx[sid] = n_ctx
-        else:
-            n_ctx = self._slot_n_ctx.get(sid, self._n_ctx_fallback)
+        cw = canvas.winfo_width()
+        ch = canvas.winfo_height()
+        if cw < 10 or ch < 5:
+            return
 
-        # next_token may be [] when no task — guard before calling .get()
-        raw_nt    = slot.get('next_token')
-        n_decoded = raw_nt.get('n_decoded', 0) if isinstance(raw_nt, dict) else 0
+        data = self._slot_bar_data.get(sid, {})
+        n_prompt_length           = data.get('n_prompt_length', 0)
+        n_prompt_tokens_processed = data.get('n_prompt_tokens_processed', 0)
+        n_decoded                 = data.get('n_decoded', 0)
+        n_ctx                     = data.get('n_ctx', 0) or self._n_ctx_fallback
 
-        # Sticky PROC: keep showing for 5 s after last seen processing
-        if is_proc:
-            self._slot_last_proc[sid] = time.monotonic()
-        show_proc = is_proc or (time.monotonic() - self._slot_last_proc.get(sid, 0) < 5.0)
+        # Scale is always n_ctx (the fixed per-slot context size).
+        # This keeps the bar consistent across requests.
+        scale = max(n_ctx, 1)
 
-        log_tokens = self._slot_ctx_tokens.get(sid, 0)
-        log_ckpt   = self._slot_ctx_checkpoint.get(sid, 0)
+        # Colours — match the chart palette
+        bg       = '#3a3a3a'
+        c_pp     = '#4e9eff'   # blue — pre-processed prompt
+        c_tg     = '#4ec94e'   # green — generated tokens
+        c_marker = '#ffffff'   # prompt-length reference line
 
-        if log_tokens > 0 or log_ckpt > 0:
-            # log_tokens  = tokens processed in the current PP batch (resets each task)
-            # log_ckpt    = total context tokens at the last checkpoint (absolute)
-            # They are in different reference frames; show each directly.
-            # Bar tracks context utilisation at the last checkpoint.
-            pct = log_ckpt / n_ctx * 100 if n_ctx else 0
-            self._set_slot_ctx_cells(w, log_ckpt, log_tokens, n_ctx, pct)
-        elif n_decoded > 0:
-            pct = n_decoded / n_ctx * 100 if n_ctx else 0
-            self._set_slot_ctx_cells(w, 0, n_decoded, n_ctx, pct)
-        else:
-            self._set_slot_ctx_cells(w, 0, 0, n_ctx, 0)
+        canvas.delete('all')
 
-        w['lbl_state'].config(
-            text='PROC' if show_proc else 'IDLE',
-            foreground='green' if show_proc else 'gray')
+        # Bar background
+        canvas.create_rectangle(0, 0, cw, ch, fill=bg, outline='')
+
+        # Pre-processed segment (blue)
+        x_pp = int(n_prompt_tokens_processed / scale * cw)
+        if x_pp > 0:
+            canvas.create_rectangle(0, 0, min(x_pp, cw), ch, fill=c_pp, outline='')
+
+        # Generated segment (green, starts where pre-processed ends)
+        x_tg = int((n_prompt_tokens_processed + n_decoded) / scale * cw)
+        if x_tg > x_pp:
+            canvas.create_rectangle(x_pp, 0, min(x_tg, cw), ch, fill=c_tg, outline='')
+
+        # Prompt-length reference marker (thin vertical line)
+        x_ref = int(n_prompt_length / scale * cw)
+        if 0 < x_ref < cw:
+            canvas.create_line(x_ref, 0, x_ref, ch, fill=c_marker, width=1)
 
     def _fetch_system_stats(self):
         if not self._sys_monitor:
@@ -875,68 +937,6 @@ class MonitorTab(ttk.Frame):
             self._bar_vram['value'] = vpct
             self._lbl_temp.config(text=f'Temp: {temp}°C')
             self._bar_temp['value'] = tpct
-
-    # ── Called from main.py log parser ────────────────────────────────────────
-
-    def update_from_log(self, metrics):
-        """Update instant metrics from a single parsed log event (legacy, unused)."""
-        pass
-
-    def update_from_metrics(self, metrics):
-        """Update raw sample buffers from log parser events."""
-        now = time.monotonic()
-        if not self._using_event_metrics and metrics.prompt_per_second > 0:
-            self._raw_prompt.append((now, metrics.prompt_per_second))
-            self._lbl_prompt_tps.config(
-                text=f'Prompt: {metrics.prompt_per_second:.1f} tok/s')
-        if not self._using_event_metrics and metrics.gen_per_second > 0:
-            self._raw_gen.append((now, metrics.gen_per_second))
-            self._lbl_gen_tps.config(
-                text=f'Gen: {metrics.gen_per_second:.1f} tok/s')
-        if not self._using_event_metrics and (metrics.draft_acceptance_rate > 0 or metrics.draft_total > 0):
-            pct = metrics.draft_acceptance_rate * 100
-            self._raw_draft.append((now, pct))
-            self._lbl_draft.config(text=f'Draft: {pct:.1f}%')
-            self._raw_draft_gen.append((now, float(metrics.draft_total)))
-            self._raw_draft_acc.append((now, float(metrics.draft_accepted)))
-        if metrics.graphs_reused > 0:
-            self._lbl_graphs.config(
-                text=f'Graphs: {metrics.graphs_reused} reused')
-
-        # Absorb any per-slot n_ctx values sniffed from "slot launch" log lines
-        for sid, n_ctx in metrics.slot_n_ctx.items():
-            if n_ctx > 0:
-                self._slot_n_ctx[sid] = n_ctx
-
-        # Clear PP state for slots that just received a new task
-        for sid in metrics.slot_task_started:
-            self._slot_ctx_tokens.pop(sid, None)
-            self._slot_ctx_checkpoint.pop(sid, None)
-            self._refresh_slot_ctx(sid)
-
-        # Absorb per-slot PP progress from print_timing lines
-        for sid, n_tokens in metrics.slot_ctx_tokens.items():
-            self._slot_ctx_tokens[sid] = n_tokens
-            self._refresh_slot_ctx(sid)
-
-        # Absorb per-slot checkpoint token counts from create_check lines
-        for sid, n_tokens in metrics.slot_ctx_checkpoint.items():
-            self._slot_ctx_checkpoint[sid] = n_tokens
-            self._refresh_slot_ctx(sid)
-
-    def _refresh_slot_ctx(self, sid):
-        """Immediately update the ctx cells for a slot using log-derived data."""
-        if sid not in self._slot_widgets:
-            return
-        w         = self._slot_widgets[sid]
-        n_ctx     = self._slot_n_ctx.get(sid, self._n_ctx_fallback)
-        log_tokens = self._slot_ctx_tokens.get(sid, 0)
-        log_ckpt   = self._slot_ctx_checkpoint.get(sid, 0)
-        if log_tokens > 0 or log_ckpt > 0:
-            pct = log_ckpt / n_ctx * 100 if n_ctx else 0
-            self._set_slot_ctx_cells(w, log_ckpt, log_tokens, n_ctx, pct)
-        else:
-            self._set_slot_ctx_cells(w, 0, 0, n_ctx, 0)
 
     def stop(self):
         self._stop_monitoring()

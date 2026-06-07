@@ -15,7 +15,8 @@
 // slot transitions from STARTED → PROCESSING_PROMPT (i.e. a new prompt begins).
 //
 struct server_slot_metrics {
-    std::atomic<uint64_t> n_pp             {0}; // prompt tokens processed
+    std::atomic<uint64_t> n_pp             {0}; // prompt tokens processed (pre-processed length)
+    std::atomic<uint64_t> n_prompt_length  {0}; // original prompt length as passed to server
     std::atomic<uint64_t> t_pp_ms          {0}; // prompt processing time (ms)
     std::atomic<uint64_t> n_tg             {0}; // generation tokens
     std::atomic<uint64_t> t_tg_ms          {0}; // token generation time (ms)
@@ -99,10 +100,9 @@ struct server_metrics {
     void on_pp_tokens(uint32_t n);
 
     // Called when the first generation token appears for a slot (prompt eval done).
-    //   n_processed  = slot.n_prompt_tokens_processed
     //   t_ms         = slot.t_prompt_processing
     //   prompt_len   = slot.prompt.n_tokens()
-    void on_pp_eval(int slot_id, uint64_t n_processed, double t_ms, uint64_t prompt_len);
+    void on_pp_eval(int slot_id, double t_ms, uint64_t prompt_len);
 
     // Called each time a generation token is produced.
     void on_tg_token(int slot_id);
