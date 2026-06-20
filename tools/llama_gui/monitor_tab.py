@@ -804,6 +804,10 @@ class MonitorTab(ttk.Frame):
             if sid not in seen:
                 self._slot_widgets[sid]['frame'].destroy()
                 del self._slot_widgets[sid]
+                self._slot_bar_data.pop(sid, None)
+                self._slot_prompt_length.pop(sid, None)
+                self._slot_last_proc.pop(sid, None)
+                self._slot_n_ctx.pop(sid, None)
 
     def _create_slot_row(self, sid):
         f = ttk.Frame(self._slots_inner)

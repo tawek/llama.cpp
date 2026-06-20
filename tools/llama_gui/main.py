@@ -682,6 +682,7 @@ class MainWindow:
         """Handle window close."""
         if not self.config_tab.on_close_request():
             return
+        self.sys_monitor.stop()
         if self.process.is_running:
             if messagebox.askyesno('Quit', 'Server is running. Stop and quit?'):
                 self._stop_server()

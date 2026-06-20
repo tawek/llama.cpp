@@ -95,6 +95,11 @@ class ServerProcess:
                 pass
 
         self._running = False
+
+        for t in (self._stdout_thread, self._stderr_thread):
+            if t and t.is_alive():
+                t.join(timeout=3.0)
+
         self._process = None
 
         for cb in self._callbacks['stopped']:
