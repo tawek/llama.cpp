@@ -112,7 +112,8 @@ struct llama_context {
 
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
 
-    void set_pp_eval_callback(llama_pp_eval_callback callback, void * user_data);
+    void set_pp_eval_callback    (llama_pp_eval_callback     callback, void * user_data);
+    void set_pp_eval_seq_callback(llama_pp_eval_seq_callback callback, void * user_data);
 
     void set_embeddings (bool value);
     void set_embeddings_nextn(bool value, bool masked);
@@ -358,6 +359,10 @@ private:
     // Per-ubatch prompt-eval callback (registered via llama_set_pp_eval_callback)
     llama_pp_eval_callback pp_eval_callback      = nullptr;
     void *                 pp_eval_callback_data = nullptr;
+
+    // Per-sequence per-ubatch prompt-eval callback (registered via llama_set_pp_eval_seq_callback)
+    llama_pp_eval_seq_callback pp_eval_seq_callback      = nullptr;
+    void *                     pp_eval_seq_callback_data = nullptr;
 
     std::vector<std::pair<ggml_backend_t, ggml_backend_set_n_threads_t>> set_n_threads_fns;
 

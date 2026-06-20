@@ -1134,6 +1134,11 @@ void llama_context::set_pp_eval_callback(llama_pp_eval_callback callback, void *
     pp_eval_callback_data = user_data;
 }
 
+void llama_context::set_pp_eval_seq_callback(llama_pp_eval_seq_callback callback, void * user_data) {
+    pp_eval_seq_callback      = callback;
+    pp_eval_seq_callback_data = user_data;
+}
+
 void llama_context::set_embeddings(bool value) {
     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);
 
@@ -2004,8 +2009,29 @@ int llama_context::decode(const llama_batch & batch_inp) {
         n_tokens_prev  += ubatch.n_tokens;
 
         // notify the server (or any caller) that a prompt ubatch just completed
-        if (pp_eval_callback && n_outputs_all < n_tokens_all) {
-            pp_eval_callback(ubatch.n_tokens, pp_eval_callback_data);
+        if (n_outputs_all < n_tokens_all) {
+            if (pp_eval_callback) {
+                pp_eval_callback(ubatch.n_tokens, pp_eval_callback_data);
+            }
+            if (pp_eval_seq_callback) {
+                // Count tokens per unique sequence in one pass.
+                // counts[] is indexed directly by seq_id (bounded by LLAMA_MAX_SEQ).
+                uint32_t counts[LLAMA_MAX_SEQ] = {};
+                for (uint32_t t = 0; t < ubatch.n_tokens; ++t) {
+                    for (int32_t k = 0; k < ubatch.n_seq_id[t]; ++k) {
+                        const llama_seq_id sid = ubatch.seq_id[t][k];
+                        if (sid >= 0 && sid < LLAMA_MAX_SEQ) {
+                            counts[sid]++;
+                        }
+                    }
+                }
+                for (uint32_t s = 0; s < ubatch.n_seqs_unq; ++s) {
+                    const llama_seq_id sid = ubatch.seq_id_unq[s];
+                    if (counts[sid] > 0) {
+                        pp_eval_seq_callback(sid, counts[sid], pp_eval_seq_callback_data);
+                    }
+                }
+            }
         }
     } while (mctx->next());
 
@@ -3653,6 +3679,10 @@ void llama_set_abort_callback(llama_context * ctx, bool (*abort_callback)(void *
 
 void llama_set_pp_eval_callback(llama_context * ctx, llama_pp_eval_callback callback, void * user_data) {
     ctx->set_pp_eval_callback(callback, user_data);
+}
+
+void llama_set_pp_eval_seq_callback(llama_context * ctx, llama_pp_eval_seq_callback callback, void * user_data) {
+    ctx->set_pp_eval_seq_callback(callback, user_data);
 }
 
 void llama_set_embeddings(llama_context * ctx, bool embeddings) {

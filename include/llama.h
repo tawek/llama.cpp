@@ -1003,6 +1003,19 @@ extern "C" {
             llama_pp_eval_callback  callback,
             void                  * user_data);
 
+    // Per-sequence variant of the PP eval callback.
+    // Fires once per unique sequence ID present in each ubatch during llama_decode(),
+    // reporting how many tokens of that sequence were in the just-completed ubatch.
+    //   seq_id   — sequence ID that was processed (equals slot ID in the server)
+    //   n_tokens — number of tokens belonging to seq_id in this ubatch
+    typedef void (*llama_pp_eval_seq_callback)(llama_seq_id seq_id, uint32_t n_tokens, void * user_data);
+
+    // Register a per-sequence PP eval callback on ctx.  Pass NULL to clear.
+    LLAMA_API void llama_set_pp_eval_seq_callback(
+            struct llama_context       * ctx,
+            llama_pp_eval_seq_callback   callback,
+            void                       * user_data);
+
     // Wait until all computations are finished
     // This is automatically done when using one of the functions below to obtain the computation results
     // and is not necessary to call it explicitly in most cases
