@@ -29,10 +29,10 @@ class MetricsChart(ttk.Frame):
     C_GRID       = '#3a3a3a'
     C_AXIS       = '#666666'
     C_PROMPT     = '#4e9eff'
-    C_GEN        = '#4ec94e'
+    C_GEN        = '#4e9eff'   # TG tokens per second line (now blue)
     C_DRAFT      = '#ffaa44'
-    C_DRAFT_GEN  = '#4e9eff'   # draft tokens generated line (matches PP blue)
-    C_DRAFT_ACC  = '#ffcc00'   # draft tokens accepted line
+    C_DRAFT_GEN  = '#ffcc00'   # draft tokens generated line
+    C_DRAFT_ACC  = '#4ec94e'   # draft tokens accepted line (now green)
     C_TEXT       = '#aaaaaa'
     C_RULE       = '#ffffff'   # vertical crosshair line
     C_HOVER_TEXT = '#ffffff'   # value label foreground
