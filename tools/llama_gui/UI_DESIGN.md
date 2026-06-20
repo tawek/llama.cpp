@@ -34,6 +34,25 @@ MainWindow (tk.Tk, 1100x700)
   - Top pane: Server Metrics + Slots + System Resources (3 × `ttk.LabelFrame`)
   - Bottom pane: `MetricsChart` (custom `tk.Canvas`, dark bg `#1e1e1e`)
 
+### Server Metrics Panel (fixed-width left column)
+Each metric is a label above a `ttk.Progressbar`, same layout as System Resources:
+
+| Gauge | Key | Unit | Adaptive max |
+|-------|-----|------|-------------|
+| PP tok/s | `pp` | tok/s | dynamic (initial 10000) |
+| TG tok/s | `tg` | tok/s | dynamic (initial 5000) |
+| TD tok/s | `td` | tok/s | dynamic (initial 5000) |
+| TA tok/s | `ta` | tok/s | dynamic (initial 5000) |
+| DA %    | `da` | % | 100 (fixed) |
+
+Values are read from the same smoothed rate buffers used by `MetricsChart`
+(4 Hz update via `_graph_tick()`). The bar ceiling auto-expands when the
+current value exceeds 80 % of the current ceiling; ceiling = 1.2 × max_seen.
+
+A grey LED diode + text label at the bottom show connection status:
+- Connected + green LED when `/health` returns `"ok"`
+- Disconnected + grey LED when no health response
+
 ### Logs Tab
 - Filter bar: 4 `ttk.Radiobutton` (All/Info/Warn/Error) + Clear + Save
 - `tk.Text(wrap='none', font=('Consolas', 8))` + H/V scrollbars
@@ -54,8 +73,10 @@ MainWindow (tk.Tk, 1100x700)
 | Chart axis | `#666666` |
 | Chart text | `#aaaaaa` |
 | Chart PP line | `#4e9eff` |
-| Chart TG line | `#4ec94e` |
+| Chart TG line | `#4e9eff` (blue, shares PP color) |
+| Chart DG line | `#4ec94e` (green, formerly TG color) |
 | Chart Draft% | `#ffaa44` |
+| Chart DA line | `#ffcc00` |
 | Tooltip | `bg=#ffffea`, `fg=#333`, `relief=solid` |
 | Help `?` label | `foreground='dodger blue'`, `font=('', 8, 'bold')` |
 | Section header | `font=('', 9, 'bold')`, `cursor='hand2'` |

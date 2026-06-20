@@ -410,6 +410,14 @@ class MonitorTab(ttk.Frame):
         self._slot_bar_data: dict = {}   # slot_id -> {n_prompt_length, n_prompt_tokens_processed, n_decoded, n_ctx}
         self._slot_prompt_length: dict = {}  # slot_id -> cached original prompt length (persists across polls)
         self._n_ctx_fallback = 0         # populated from prometheus n_ctx_size / n_slots
+        # Gauge state
+        self._gauge_max_seen = {
+            'pp': 0.0,
+            'tg': 0.0,
+            'td': 0.0,
+            'ta': 0.0,
+            'da': 100.0,
+        }
         # Event-based rate tracking (from /metrics n_tokens_pp/tg/td/tda/tdr counters)
         self._prev_pp_total = 0.0
         self._prev_tg_total = 0.0
@@ -454,19 +462,37 @@ class MonitorTab(ttk.Frame):
 
         # ── Server Metrics ────────────────────────────────────────────────────
         sm_frame = ttk.LabelFrame(top, text='Server Metrics', padding=(8, 4))
-        sm_frame.pack(side='left', fill='both', expand=True, padx=(0, 4))
+        sm_frame.pack(side='left', fill='y', padx=(0, 4))
 
-        self._lbl_prompt_tps = ttk.Label(sm_frame, text='Prompt: -- tok/s')
-        self._lbl_prompt_tps.pack(fill='x', pady=1)
-        self._lbl_gen_tps = ttk.Label(sm_frame, text='Gen: -- tok/s')
-        self._lbl_gen_tps.pack(fill='x', pady=1)
-        self._lbl_draft = ttk.Label(sm_frame, text='Draft: --%')
-        self._lbl_draft.pack(fill='x', pady=1)
-        self._lbl_graphs = ttk.Label(sm_frame, text='Graphs: --')
-        self._lbl_graphs.pack(fill='x', pady=1)
-        self._lbl_status = ttk.Label(sm_frame, text='Status: Idle',
-                                      foreground='gray')
-        self._lbl_status.pack(fill='x', pady=1)
+        self._gauges = {}
+        gauge_specs = [
+            ('pp', 'PP',  'tok/s'),
+            ('tg', 'TG',  'tok/s'),
+            ('td', 'TD',  'tok/s'),
+            ('ta', 'TA',  'tok/s'),
+            ('da', 'DA%', '%'),
+        ]
+        for key, label, unit in gauge_specs:
+            f = ttk.Frame(sm_frame)
+            f.pack(fill='x', pady=1)
+            lbl = ttk.Label(f, text=f'{label}:  -- {unit}', anchor='w', width=22)
+            lbl.pack(fill='x')
+            bar = ttk.Progressbar(f, maximum=100, length=160)
+            bar.pack(fill='x', pady=(0, 2))
+            self._gauges[key] = {'lbl': lbl, 'bar': bar}
+
+        ttk.Separator(sm_frame, orient='horizontal').pack(fill='x', pady=4)
+
+        # Connection status — LED diode + text label
+        status_frame = ttk.Frame(sm_frame)
+        status_frame.pack(fill='x', pady=1)
+        self._status_led = tk.Canvas(status_frame, width=16, height=16,
+                                      highlightthickness=0)
+        self._status_led.pack(side='right')
+        self._status_led.create_oval(2, 2, 14, 14, fill='gray', outline='')
+        self._lbl_status = ttk.Label(status_frame, text='Disconnected',
+                                      foreground='gray', anchor='w')
+        self._lbl_status.pack(side='left', fill='x')
 
         # ── Slots ─────────────────────────────────────────────────────────────
         slots_frame = ttk.LabelFrame(top, text='Slots', padding=(8, 4))
@@ -599,12 +625,39 @@ class MonitorTab(ttk.Frame):
             # Window is empty (no new data) — hold the last known value
             return buf[-1][1]
 
-        self._chart.add_point(_avg(self._raw_prompt),
-                              _avg(self._raw_gen),
-                              _avg(self._raw_draft),
-                              _avg(self._raw_draft_gen),
-                              _avg(self._raw_draft_acc))
+        pp = _avg(self._raw_prompt)
+        tg = _avg(self._raw_gen)
+        da = _avg(self._raw_draft)
+        td = _avg(self._raw_draft_gen)
+        ta = _avg(self._raw_draft_acc)
+
+        self._chart.add_point(pp, tg, da, td, ta)
+        self._update_gauges(pp, tg, td, ta, da)
         self._graph_tick_id = self.after(250, self._graph_tick)
+
+    def _update_gauges(self, pp, tg, td, ta, da):
+        """Update gauge labels and progress bars from smoothed graph values."""
+        for key, val, fmt in [
+            ('pp', pp, 'PP:  {:.1f} tok/s'),
+            ('tg', tg, 'TG:  {:.1f} tok/s'),
+            ('td', td, 'TD:  {:.1f} tok/s'),
+            ('ta', ta, 'TA:  {:.1f} tok/s'),
+            ('da', da, 'DA:  {:.1f}%'),
+        ]:
+            v = max(val, 0.0)
+            g = self._gauges.get(key)
+            if not g:
+                continue
+            g['lbl'].config(text=fmt.format(v))
+
+            # Adaptive max — expand when value exceeds 80 % of current ceiling
+            max_seen = self._gauge_max_seen.get(key, 100.0)
+            if v > max_seen:
+                max_seen = v
+                self._gauge_max_seen[key] = max_seen
+            ceiling = max_seen * 1.2
+            g['bar']['maximum'] = max(ceiling, 1.0)
+            g['bar']['value'] = v
 
     def _schedule_next(self):
         self._after_id = self.after(self._refresh_ms, self._poll_once)
@@ -667,10 +720,17 @@ class MonitorTab(ttk.Frame):
     def _apply_health(self, health):
         if health:
             status = health.get('status', 'unknown')
-            color = 'green' if status == 'ok' else 'red'
-            self._lbl_status.config(text=f'Status: {status}', foreground=color)
+            led_color = 'green' if status == 'ok' else 'red'
+            self._lbl_status.config(text='Connected' if status == 'ok' else status,
+                                    foreground='green' if status == 'ok' else 'red')
         else:
-            self._lbl_status.config(text='Status: Disconnected', foreground='gray')
+            led_color = 'gray'
+            self._lbl_status.config(text='Disconnected', foreground='gray')
+        self._set_led(led_color)
+
+    def _set_led(self, color):
+        self._status_led.delete('all')
+        self._status_led.create_oval(2, 2, 14, 14, fill=color, outline='')
 
     def _apply_metrics(self, parsed):
         now = time.monotonic()
@@ -705,8 +765,6 @@ class MonitorTab(ttk.Frame):
 
                         self._raw_prompt.append((now, pp_rate))
                         self._raw_gen.append((now, tg_rate))
-                        self._lbl_prompt_tps.config(text=f'Prompt: {pp_rate:.1f} tok/s')
-                        self._lbl_gen_tps.config(text=f'Gen: {tg_rate:.1f} tok/s')
 
                         self._raw_draft_gen.append((now, td_rate))
                         self._raw_draft_acc.append((now, tda_rate))
@@ -714,8 +772,6 @@ class MonitorTab(ttk.Frame):
                         total_rej = tda_rate + tdr_rate
                         pct = min(100.0, tda_rate / total_rej * 100) if total_rej > 0 else 0.0
                         self._raw_draft.append((now, max(0.0, pct)))
-
-                        self._lbl_draft.config(text=f'Draft: {pct:.1f}%')
 
             self._prev_pp_total = pp_total
             self._prev_tg_total = tg_total
