@@ -1419,6 +1419,19 @@ private:
 
         metrics.init((int) slots.size());
 
+        // Register the per-sequence PP callback so per-slot t_pp_ms is updated
+        // in real-time after each ubatch, not only when PP is fully done.
+        // Must be registered after metrics.init() — the lambda accesses per-slot data.
+        llama_set_pp_eval_seq_callback(ctx_tgt,
+            [](llama_seq_id seq_id, uint32_t /* n_tokens */, void * ud) {
+                auto * m = static_cast<server_metrics *>(ud);
+                const int64_t t_start = m->slot((int) seq_id).t_start_pp.load(std::memory_order_relaxed);
+                if (t_start > 0) {
+                    const uint64_t elapsed_ms = (uint64_t) ((ggml_time_us() - t_start) / 1e3);
+                    m->slot((int) seq_id).t_pp_ms.store(elapsed_ms, std::memory_order_relaxed);
+                }
+            }, &metrics);
+
         if (params_base.cache_idle_slots) {
             if (params_base.cache_ram_mib == 0) {
                 SRV_WRN("%s", "--cache-idle-slots requires --cache-ram, disabling\n");
@@ -3005,6 +3018,7 @@ private:
                         slot.t_start_generation = 0;
 
                         metrics.reset_slot(slot.id);
+                        metrics.on_pp_start_slot(slot.id, slot.t_start_process_prompt);
                         slot.state = SLOT_STATE_PROCESSING_PROMPT;
 
                         SLT_TRC(slot, "new prompt, n_ctx_slot = %d, n_keep = %d, task.n_tokens = %d\n",

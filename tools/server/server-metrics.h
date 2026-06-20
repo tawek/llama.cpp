@@ -17,11 +17,17 @@
 struct server_slot_metrics {
     std::atomic<uint64_t> n_pp             {0}; // prompt tokens processed (pre-processed length)
     std::atomic<uint64_t> n_prompt_length  {0}; // original prompt length as passed to server
-    std::atomic<uint64_t> t_pp_ms          {0}; // prompt processing time (ms)
+    std::atomic<uint64_t> t_pp_ms          {0}; // prompt processing time (ms); updated in real-time during PP
     std::atomic<uint64_t> n_tg             {0}; // generation tokens
     std::atomic<uint64_t> t_tg_ms          {0}; // token generation time (ms)
     std::atomic<uint64_t> n_draft          {0}; // speculative draft tokens proposed
     std::atomic<uint64_t> n_draft_accepted {0}; // speculative draft tokens accepted
+
+    // Wall-clock start time of the current PP phase (µs, from ggml_time_us()).
+    // Set by on_pp_start_slot() when a slot transitions to PROCESSING_PROMPT.
+    // Used by the pp_eval_seq callback to compute intermediate t_pp_ms values.
+    // Reset to 0 by reset().
+    std::atomic<int64_t>  t_start_pp       {0};
 
     void reset();
     uint64_t n_draft_rejected() const;
@@ -98,6 +104,10 @@ struct server_metrics {
 
     // From llama_pp_eval_callback — no slot_id (ubatch may span several slots).
     void on_pp_tokens(uint32_t n);
+
+    // Called when a slot transitions to PROCESSING_PROMPT; stores the PP start
+    // time so that the pp_eval_seq callback can compute intermediate t_pp_ms.
+    void on_pp_start_slot(int slot_id, int64_t t_start_us);
 
     // Incremental per-slot prompt tokens processed during PP (real-time tracking).
     void on_pp_tokens_slot(int slot_id, uint32_t n);

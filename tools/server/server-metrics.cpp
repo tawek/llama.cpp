@@ -15,6 +15,7 @@ void server_slot_metrics::reset() {
     t_tg_ms         .store(0, std::memory_order_relaxed);
     n_draft         .store(0, std::memory_order_relaxed);
     n_draft_accepted.store(0, std::memory_order_relaxed);
+    t_start_pp      .store(0, std::memory_order_relaxed);
 }
 
 uint64_t server_slot_metrics::n_draft_rejected() const {
@@ -58,6 +59,10 @@ void server_metrics::init(int n_slots) {
 
 void server_metrics::on_pp_tokens(uint32_t n) {
     n_pp.fetch_add(n, std::memory_order_relaxed);
+}
+
+void server_metrics::on_pp_start_slot(int slot_id, int64_t t_start_us) {
+    slot(slot_id).t_start_pp.store(t_start_us, std::memory_order_relaxed);
 }
 
 void server_metrics::on_pp_tokens_slot(int slot_id, uint32_t n) {
@@ -128,13 +133,13 @@ void server_metrics::reset_global() {
 double server_metrics::pp_tokens_per_sec() const {
     const uint64_t n = n_pp   .load(std::memory_order_relaxed);
     const uint64_t t = t_pp_ms.load(std::memory_order_relaxed);
-    return (n && t) ? 1.e3 / t * n : 0.0;
+    return (n && t) ? 1.e3 / t * n : 1.0;
 }
 
 double server_metrics::tg_tokens_per_sec() const {
     const uint64_t n = n_tg   .load(std::memory_order_relaxed);
     const uint64_t t = t_tg_ms.load(std::memory_order_relaxed);
-    return (n && t) ? 1.e3 / t * n : 0.0;
+    return (n && t) ? 1.e3 / t * n : 1.0;
 }
 
 float server_metrics::busy_slots_per_decode() const {
