@@ -70,7 +70,7 @@ SECTIONS = [
         'host', 'port', 'parallel', 'sequences', 'cont_batching',
         'timeout', 'threads_http', 'api_key',
         'ssl_key', 'ssl_cert', 'path', 'api_prefix',
-        ('WebUI', ['webui', 'webui_config']),
+        ('UI', ['ui', 'ui_config', 'ui_mcp_proxy']),
         ('Server Features', ['tools', 'embedding', 'rerank',
                              'metrics', 'props', 'slots'])]),
     ('Embedding', [

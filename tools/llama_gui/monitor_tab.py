@@ -436,7 +436,8 @@ class MonitorTab(ttk.Frame):
         self._raw_draft_acc: deque = deque(maxlen=_MAX_RAW)
         # Smoothing window in ms: average all samples within [now-window, now];
         # if none fall inside the window the most recent sample is used as-is.
-        self._graph_smooth_ms:  int = 2000
+        self._graph_smooth_ms_pp: int = 2000
+        self._graph_smooth_ms_tg: int = 2000
         # Visible time window in seconds (controls scroll speed)
         self._graph_time_window_s:  int = 120
         self._graph_tick_id = None
@@ -612,10 +613,11 @@ class MonitorTab(ttk.Frame):
 
     def _graph_tick(self):
         """Push one smoothed point to the chart at a fixed 4 Hz regardless of fetch state."""
-        now    = time.monotonic()
-        cutoff = now - self._graph_smooth_ms / 1000.0
+        now = time.monotonic()
+        cutoff_pp = now - self._graph_smooth_ms_pp / 1000.0
+        cutoff_tg = now - self._graph_smooth_ms_tg / 1000.0
 
-        def _avg(buf: deque) -> float:
+        def _avg(buf, cutoff) -> float:
             if not buf:
                 return 0.0
             # Collect samples within the smoothing window
@@ -625,11 +627,11 @@ class MonitorTab(ttk.Frame):
             # Window is empty (no new data) — hold the last known value
             return buf[-1][1]
 
-        pp = _avg(self._raw_prompt)
-        tg = _avg(self._raw_gen)
-        da = _avg(self._raw_draft)
-        td = _avg(self._raw_draft_gen)
-        ta = _avg(self._raw_draft_acc)
+        pp = _avg(self._raw_prompt, cutoff_pp)
+        tg = _avg(self._raw_gen,    cutoff_tg)
+        da = _avg(self._raw_draft,  cutoff_tg)
+        td = _avg(self._raw_draft_gen, cutoff_tg)
+        ta = _avg(self._raw_draft_acc, cutoff_tg)
 
         self._chart.add_point(pp, tg, da, td, ta)
         self._update_gauges(pp, tg, td, ta, da)

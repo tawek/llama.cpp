@@ -43,7 +43,7 @@ Supporting docs in this directory:
 
 1. **No blocking on the main thread.** All HTTP polling (`ServerAPI`) and long-running work runs via background threads or `root.after()` loops. Never call `time.sleep()` on the Tk thread.
 2. **No external dependencies.** Only stdlib. `urllib` for HTTP, `subprocess` for the server process, `json` for profiles.
-3. **Preferences** persist to `~/.llama-gui/preferences.json`. Keys: `refresh_ms`, `metrics_sample_ms`, `graph_smooth_ms`, `graph_time_window_s`, `health_timeout`, `server_bin`, `last_profile`, `theme_mode`.
+3. **Preferences** persist to `~/.llama-gui/preferences.json`. Keys: `refresh_ms`, `metrics_sample_ms`, `graph_smooth_ms_pp`, `graph_smooth_ms_tg`, `graph_time_window_s`, `health_timeout`, `server_bin`, `last_profile`, `theme_mode`.
 4. **Profiles** are JSON files in `~/.llama-gui/profiles/`. Managed by `ProfileManager`.
 5. **Options registry** (`config_registry.py`) is the single source of truth for all CLI options. If a new llama-server flag needs to be exposed, add it there — the widget, command builder, and profile system all derive from it.
 

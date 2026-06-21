@@ -465,33 +465,39 @@ class MainWindow:
                      textvariable=metrics_var, width=8).grid(
             row=3, column=1, sticky='w', **pad)
 
-        # Graph smoothing window
-        ttk.Label(dlg, text='Graph smooth (ms):').grid(
+        # Graph smoothing windows
+        ttk.Label(dlg, text='Smooth PP (ms):').grid(
             row=4, column=0, sticky='w', **pad)
-        smooth_var = tk.StringVar(value=str(self.monitor_tab._graph_smooth_ms))
+        smooth_pp_var = tk.StringVar(value=str(self.monitor_tab._graph_smooth_ms_pp))
         ttk.Spinbox(dlg, from_=100, to=30000, increment=500,
-                     textvariable=smooth_var, width=8).grid(
+                     textvariable=smooth_pp_var, width=8).grid(
             row=4, column=1, sticky='w', **pad)
+        ttk.Label(dlg, text='Smooth TG (ms):').grid(
+            row=5, column=0, sticky='w', **pad)
+        smooth_tg_var = tk.StringVar(value=str(self.monitor_tab._graph_smooth_ms_tg))
+        ttk.Spinbox(dlg, from_=100, to=30000, increment=500,
+                     textvariable=smooth_tg_var, width=8).grid(
+            row=5, column=1, sticky='w', **pad)
 
         # Graph time window
         ttk.Label(dlg, text='Graph window (s):').grid(
-            row=5, column=0, sticky='w', **pad)
+            row=6, column=0, sticky='w', **pad)
         window_var = tk.StringVar(value=str(self.monitor_tab._graph_time_window_s))
         ttk.Spinbox(dlg, from_=30, to=600, increment=30,
                      textvariable=window_var, width=8).grid(
-            row=5, column=1, sticky='w', **pad)
+            row=6, column=1, sticky='w', **pad)
 
         # Theme — live preview: changing the selection immediately re-renders
         # the whole GUI.  Cancel reverts to the mode active when the dialog
         # was opened.
         _prev_theme = self._theme_mode
         ttk.Label(dlg, text='Theme:').grid(
-            row=6, column=0, sticky='w', **pad)
+            row=7, column=0, sticky='w', **pad)
         theme_var = tk.StringVar(value=self._theme_mode)
         theme_combo = ttk.Combobox(dlg, textvariable=theme_var,
                                    values=['dark', 'light', 'system'],
                                    state='readonly', width=10)
-        theme_combo.grid(row=6, column=1, sticky='w', **pad)
+        theme_combo.grid(row=7, column=1, sticky='w', **pad)
 
         def _preview_theme(event=None):
             self.set_theme(theme_var.get())
@@ -508,9 +514,9 @@ class MainWindow:
             'draft_tokens': 'Draft tokens (gen/acc)',
         }
         ttk.Label(dlg, text='Graphs:').grid(
-            row=7, column=0, sticky='nw', **pad)
+            row=8, column=0, sticky='nw', **pad)
         gfx_frame = ttk.Frame(dlg)
-        gfx_frame.grid(row=7, column=1, columnspan=2, sticky='w', **pad)
+        gfx_frame.grid(row=8, column=1, columnspan=2, sticky='w', **pad)
         _graph_vars = {}
         for i, (key, lbl) in enumerate(_graph_labels.items()):
             var = tk.BooleanVar(value=chart._graphs_visible.get(key, True))
@@ -527,11 +533,11 @@ class MainWindow:
                 row=i // 2, column=i % 2, sticky='w', padx=(0, 12), pady=2)
 
         ttk.Separator(dlg, orient='horizontal').grid(
-            row=8, column=0, columnspan=3, sticky='ew', pady=6)
+            row=9, column=0, columnspan=3, sticky='ew', pady=6)
 
         # Buttons
         btn_frame = ttk.Frame(dlg)
-        btn_frame.grid(row=9, column=0, columnspan=3, pady=(0, 8))
+        btn_frame.grid(row=10, column=0, columnspan=3, pady=(0, 8))
 
         def _ok():
             self.config_tab._server_bin_var.set(bin_var.get())
@@ -548,7 +554,11 @@ class MainWindow:
             except ValueError:
                 pass
             try:
-                self.monitor_tab._graph_smooth_ms = max(100, min(30000, int(smooth_var.get())))
+                self.monitor_tab._graph_smooth_ms_pp = max(100, min(30000, int(smooth_pp_var.get())))
+            except ValueError:
+                pass
+            try:
+                self.monitor_tab._graph_smooth_ms_tg = max(100, min(30000, int(smooth_tg_var.get())))
             except ValueError:
                 pass
             try:
@@ -619,8 +629,14 @@ class MainWindow:
                     self.monitor_tab._refresh_ms = int(prefs['refresh_ms'])
                 if 'metrics_sample_ms' in prefs:
                     self.monitor_tab._metrics_sample_ms = int(prefs['metrics_sample_ms'])
-                if 'graph_smooth_ms' in prefs:
-                    self.monitor_tab._graph_smooth_ms = max(100, min(30000, int(prefs['graph_smooth_ms'])))
+                if 'graph_smooth_ms_pp' in prefs:
+                    self.monitor_tab._graph_smooth_ms_pp = max(100, min(30000, int(prefs['graph_smooth_ms_pp'])))
+                elif 'graph_smooth_ms' in prefs:
+                    self.monitor_tab._graph_smooth_ms_pp = max(100, min(30000, int(prefs['graph_smooth_ms'])))
+                if 'graph_smooth_ms_tg' in prefs:
+                    self.monitor_tab._graph_smooth_ms_tg = max(100, min(30000, int(prefs['graph_smooth_ms_tg'])))
+                elif 'graph_smooth_ms' in prefs:
+                    self.monitor_tab._graph_smooth_ms_tg = max(100, min(30000, int(prefs['graph_smooth_ms'])))
                 if 'graph_time_window_s' in prefs:
                     w = max(30, min(600, int(prefs['graph_time_window_s'])))
                     self.monitor_tab._graph_time_window_s = w
@@ -658,7 +674,8 @@ class MainWindow:
             prefs = {
                 'refresh_ms': self.monitor_tab._refresh_ms,
                 'metrics_sample_ms': self.monitor_tab._metrics_sample_ms,
-                'graph_smooth_ms':      self.monitor_tab._graph_smooth_ms,
+                'graph_smooth_ms_pp':   self.monitor_tab._graph_smooth_ms_pp,
+                'graph_smooth_ms_tg':   self.monitor_tab._graph_smooth_ms_tg,
                 'graph_time_window_s':  self.monitor_tab._graph_time_window_s,
                 'health_timeout': self._health_check_timeout,
                 'server_bin': self.config_tab._server_bin_var.get(),
