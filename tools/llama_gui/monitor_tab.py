@@ -33,6 +33,11 @@ class MetricsChart(ttk.Frame):
     C_DRAFT      = '#ffaa44'
     C_DRAFT_GEN  = '#ffcc00'   # draft tokens generated line
     C_DRAFT_ACC  = '#4ec94e'   # draft tokens accepted line (now green)
+    C_PROMPT_RAW     = '#274f80'
+    C_GEN_RAW        = '#274f80'
+    C_DRAFT_RAW      = '#805522'
+    C_DRAFT_GEN_RAW  = '#806611'
+    C_DRAFT_ACC_RAW  = '#276427'
     C_TEXT       = '#aaaaaa'
     C_RULE       = '#ffffff'   # vertical crosshair line
     C_HOVER_TEXT = '#ffffff'   # value label foreground
@@ -61,6 +66,11 @@ class MetricsChart(ttk.Frame):
         super().__init__(parent)
         self._time_window_s  = time_window_s
         self._max_points     = time_window_s * (1000 // self.TICK_MS)
+        self._raw_prompt    = []
+        self._raw_gen       = []
+        self._raw_draft     = []
+        self._raw_draft_gen = []
+        self._raw_draft_acc = []
         self._prompt    = []
         self._gen       = []
         self._draft     = []   # draft acceptance %
@@ -74,22 +84,41 @@ class MetricsChart(ttk.Frame):
         self._canvas.bind('<Motion>', self._on_hover)
         self._canvas.bind('<Leave>',  self._on_leave)
 
-    def add_point(self, prompt_tps: float, gen_tps: float, draft_pct: float,
-                  draft_gen: float = 0.0, draft_acc: float = 0.0):
+    def add_point(self, prompt_tps_raw: float, prompt_tps: float,
+                  gen_tps_raw: float, gen_tps: float,
+                  draft_pct_raw: float, draft_pct: float,
+                  draft_gen_raw: float = 0.0, draft_gen: float = 0.0,
+                  draft_acc_raw: float = 0.0, draft_acc: float = 0.0):
+        self._raw_prompt.append(max(0.0, prompt_tps_raw))
+        self._raw_gen.append(max(0.0, gen_tps_raw))
+        self._raw_draft.append(max(0.0, min(100.0, draft_pct_raw)))
+        self._raw_draft_gen.append(max(0.0, draft_gen_raw))
+        self._raw_draft_acc.append(max(0.0, draft_acc_raw))
         self._prompt.append(max(0.0, prompt_tps))
         self._gen.append(max(0.0, gen_tps))
         self._draft.append(max(0.0, min(100.0, draft_pct)))
         self._draft_gen.append(max(0.0, draft_gen))
         self._draft_acc.append(max(0.0, draft_acc))
         if len(self._prompt) > self._max_points:
-            self._prompt    = self._prompt[-self._max_points:]
-            self._gen       = self._gen[-self._max_points:]
-            self._draft     = self._draft[-self._max_points:]
-            self._draft_gen = self._draft_gen[-self._max_points:]
-            self._draft_acc = self._draft_acc[-self._max_points:]
+            trim = self._max_points
+            self._raw_prompt    = self._raw_prompt[-trim:]
+            self._raw_gen       = self._raw_gen[-trim:]
+            self._raw_draft     = self._raw_draft[-trim:]
+            self._raw_draft_gen = self._raw_draft_gen[-trim:]
+            self._raw_draft_acc = self._raw_draft_acc[-trim:]
+            self._prompt        = self._prompt[-trim:]
+            self._gen           = self._gen[-trim:]
+            self._draft         = self._draft[-trim:]
+            self._draft_gen     = self._draft_gen[-trim:]
+            self._draft_acc     = self._draft_acc[-trim:]
         self._redraw()
 
     def clear(self):
+        self._raw_prompt.clear()
+        self._raw_gen.clear()
+        self._raw_draft.clear()
+        self._raw_draft_gen.clear()
+        self._raw_draft_acc.clear()
         self._prompt.clear()
         self._gen.clear()
         self._draft.clear()
@@ -102,11 +131,16 @@ class MetricsChart(ttk.Frame):
         self._time_window_s = max(10, seconds)
         new_max = self._time_window_s * (1000 // self.TICK_MS)
         if new_max < self._max_points:
-            self._prompt    = self._prompt[-new_max:]
-            self._gen       = self._gen[-new_max:]
-            self._draft     = self._draft[-new_max:]
-            self._draft_gen = self._draft_gen[-new_max:]
-            self._draft_acc = self._draft_acc[-new_max:]
+            self._raw_prompt    = self._raw_prompt[-new_max:]
+            self._raw_gen       = self._raw_gen[-new_max:]
+            self._raw_draft     = self._raw_draft[-new_max:]
+            self._raw_draft_gen = self._raw_draft_gen[-new_max:]
+            self._raw_draft_acc = self._raw_draft_acc[-new_max:]
+            self._prompt        = self._prompt[-new_max:]
+            self._gen           = self._gen[-new_max:]
+            self._draft         = self._draft[-new_max:]
+            self._draft_gen     = self._draft_gen[-new_max:]
+            self._draft_acc     = self._draft_acc[-new_max:]
         self._max_points = new_max
         self._redraw()
 
@@ -235,23 +269,31 @@ class MetricsChart(ttk.Frame):
                 return y1 - (v / max_val) * (y1 - y0)
             return to_y
 
-        def draw_line(data, color, to_y):
+        def draw_line(data, color, to_y, width=1.5, smooth=True):
             coords = []
             for i, v in enumerate(data):
                 coords.extend([to_x(i), to_y(v)])
             if len(coords) >= 4:
-                c.create_line(*coords, fill=color, width=1.5, smooth=True)
+                c.create_line(*coords, fill=color, width=width, smooth=smooth)
 
         if 'pp' in rects:
             r = rects['pp']
-            max_pp = self._nice_ceil(max(self._prompt)) if self._prompt else 10.0
-            draw_line(self._prompt, self.C_PROMPT, make_to_y(r[1], r[3], max_pp))
+            all_pp = self._prompt + self._raw_prompt
+            max_pp = self._nice_ceil(max(all_pp)) if all_pp else 10.0
+            to_y_pp = make_to_y(r[1], r[3], max_pp)
+            draw_line(self._raw_prompt, self.C_PROMPT_RAW, to_y_pp, width=0.7, smooth=False)
+            draw_line(self._prompt, self.C_PROMPT, to_y_pp)
 
         if 'tg' in rects:
             r = rects['tg']
-            all_vals = self._gen + self._draft_gen + self._draft_acc
+            all_vals = self._gen + self._draft_gen + self._draft_acc + self._raw_gen + self._raw_draft_gen + self._raw_draft_acc
             max_tg = self._nice_ceil(max(all_vals)) if all_vals else 10.0
             to_y_tg = make_to_y(r[1], r[3], max_tg)
+            draw_line(self._raw_gen, self.C_GEN_RAW, to_y_tg, width=0.7, smooth=False)
+            n_rdt = len(self._raw_draft_gen)
+            if n_rdt >= 2:
+                draw_line(self._raw_draft_gen, self.C_DRAFT_GEN_RAW, to_y_tg, width=0.7, smooth=False)
+                draw_line(self._raw_draft_acc, self.C_DRAFT_ACC_RAW, to_y_tg, width=0.7, smooth=False)
             draw_line(self._gen, self.C_GEN, to_y_tg)
             n_dt = len(self._draft_gen)
             if n_dt >= 2:
@@ -260,7 +302,9 @@ class MetricsChart(ttk.Frame):
 
         if 'draft_pct' in rects:
             r = rects['draft_pct']
-            draw_line(self._draft, self.C_DRAFT, make_to_y(r[1], r[3], 100.0))
+            to_y_da = make_to_y(r[1], r[3], 100.0)
+            draw_line(self._raw_draft, self.C_DRAFT_RAW, to_y_da, width=0.7, smooth=False)
+            draw_line(self._draft, self.C_DRAFT, to_y_da)
 
         self._draw_hover()
 
@@ -618,23 +662,32 @@ class MonitorTab(ttk.Frame):
         cutoff_pp = now - self._graph_smooth_ms_pp / 1000.0
         cutoff_tg = now - self._graph_smooth_ms_tg / 1000.0
 
-        def _avg(buf, cutoff) -> float:
+        def _wma(buf, cutoff) -> float:
+            """Weighted moving average with linear envelope (newest = highest weight)."""
             if not buf:
                 return 0.0
-            # Collect samples within the smoothing window
             window = [v for t, v in buf if t >= cutoff]
             if window:
-                return sum(window) / len(window)
-            # Window is empty (no new data) — hold the last known value
+                n = len(window)
+                weights = [i + 1 for i in range(n)]
+                return sum(v * w for v, w in zip(window, weights)) / sum(weights)
             return buf[-1][1]
 
-        pp = _avg(self._raw_prompt, cutoff_pp)
-        tg = _avg(self._raw_gen,    cutoff_tg)
-        da = _avg(self._raw_draft,  cutoff_tg)
-        td = _avg(self._raw_draft_gen, cutoff_tg)
-        ta = _avg(self._raw_draft_acc, cutoff_tg)
+        def _raw(buf) -> float:
+            return buf[-1][1] if buf else 0.0
 
-        self._chart.add_point(pp, tg, da, td, ta)
+        pp_raw = _raw(self._raw_prompt)
+        pp     = _wma(self._raw_prompt, cutoff_pp)
+        tg_raw = _raw(self._raw_gen)
+        tg     = _wma(self._raw_gen,    cutoff_tg)
+        da_raw = _raw(self._raw_draft)
+        da     = _wma(self._raw_draft,  cutoff_tg)
+        td_raw = _raw(self._raw_draft_gen)
+        td     = _wma(self._raw_draft_gen, cutoff_tg)
+        ta_raw = _raw(self._raw_draft_acc)
+        ta     = _wma(self._raw_draft_acc, cutoff_tg)
+
+        self._chart.add_point(pp_raw, pp, tg_raw, tg, da_raw, da, td_raw, td, ta_raw, ta)
         self._update_gauges(pp, tg, td, ta, da)
         self._graph_tick_id = self.after(250, self._graph_tick)
 
