@@ -3825,6 +3825,7 @@ private:
                         SLT_INF(slot, "accepted %2u/%2zu draft tokens\n", n_accepted, n_draft);
                     }
                     common_speculative_accept(spec.get(), slot.id, n_accepted);
+                    metrics.on_draft_accepted(slot.id, n_accepted);
                 }
             }
 
