@@ -369,10 +369,10 @@ class ConfigTab(ttk.Frame):
         ttk.Label(pf, text='Profile:').pack(side='left')
         self._profile_var = tk.StringVar()
         self._profile_combo = ttk.Combobox(pf, textvariable=self._profile_var,
-                                           state='readonly', width=24)
+                                            state='readonly', width=24)
         self._profile_combo.pack(side='left', padx=4)
         self._profile_combo.bind('<<ComboboxSelected>>',
-                                 lambda e: self._on_profile_select())
+                                  lambda e: self._on_profile_select())
 
         ttk.Button(pf, text='Save', command=self._save_profile).pack(side='left', padx=1)
         ttk.Button(pf, text='Save As...', command=self._save_as_profile).pack(side='left', padx=1)

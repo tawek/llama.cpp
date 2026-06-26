@@ -596,6 +596,7 @@ class MonitorTab(ttk.Frame):
     # ── Monitoring control ────────────────────────────────────────────────────
 
     def _start_monitoring(self):
+        self._stop_monitoring()
         self._poll_once()
         self._poll_metrics_once()
         self._graph_tick()

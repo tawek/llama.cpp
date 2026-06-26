@@ -46,16 +46,16 @@ class LogsTab(ttk.Frame):
         filter_frame.pack(side='left', padx=4)
 
         for label, value in [('All', 'all'), ('Info', 'info'),
-                               ('Warn', 'warn'), ('Error', 'error')]:
+                                ('Warn', 'warn'), ('Error', 'error')]:
             ttk.Radiobutton(filter_frame, text=label,
                             variable=self._filter_var,
                             value=value).pack(side='left', padx=2)
         self._filter_var.trace_add('write', lambda *_: self._reapply_filter())
 
         ttk.Button(ctrl_frame, text='Clear',
-                   command=self._clear_logs).pack(side='right', padx=2)
+                    command=self._clear_logs).pack(side='right', padx=2)
         ttk.Button(ctrl_frame, text='Save Log',
-                   command=self._save_log).pack(side='right')
+                    command=self._save_log).pack(side='right')
 
         text_frame = ttk.Frame(self)
         text_frame.pack(fill='both', expand=True, padx=4, pady=4)

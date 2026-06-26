@@ -90,6 +90,9 @@ class MainWindow:
         self._health_check_id = None
         self._log_queue: queue.Queue = queue.Queue()   # thread → main-thread
 
+        # Server URL for external monitoring (must be set before _build_ui)
+        self._server_url_var = tk.StringVar()
+
         # Setup UI
         self._build_ui()
 
@@ -108,6 +111,9 @@ class MainWindow:
 
         # Load saved preferences
         self._load_preferences()
+
+        # Start auto-monitoring on launch (connects to configured URL)
+        self.root.after(500, self._start_auto_monitor)
 
     def _set_icon(self):
         """Set the window icon from the bundled base64 PNG."""
@@ -188,35 +194,64 @@ class MainWindow:
         self._build_statusbar()
 
     def _build_toolbar(self):
+        # Two-row toolbar: server controls on top, connection controls below.
+        # The Entry widget expands to fill available space in row 1.
         toolbar = ttk.Frame(self.root)
         toolbar.pack(fill='x', padx=4, pady=4)
 
-        self._btn_start = ttk.Button(toolbar, text='Start',
+        # ── Row 0: Server lifecycle controls ──────────────────────────────────
+        row0 = ttk.Frame(toolbar)
+        row0.pack(fill='x')
+
+        self._btn_start = ttk.Button(row0, text='Start',
                                       command=self._start_server)
-        self._btn_start.pack(side='left', padx=2)
+        self._btn_start.grid(row=0, column=0, padx=2, pady=2, sticky='w')
 
-        self._btn_stop = ttk.Button(toolbar, text='Stop', state='disabled',
+        self._btn_stop = ttk.Button(row0, text='Stop', state='disabled',
                                      command=self._stop_server)
-        self._btn_stop.pack(side='left', padx=2)
+        self._btn_stop.grid(row=0, column=1, padx=2, pady=2, sticky='w')
 
-        self._btn_restart = ttk.Button(toolbar, text='Restart', state='disabled',
+        self._btn_restart = ttk.Button(row0, text='Restart', state='disabled',
                                         command=self._restart_server)
-        self._btn_restart.pack(side='left', padx=2)
+        self._btn_restart.grid(row=0, column=2, padx=2, pady=2, sticky='w')
 
-        ttk.Separator(toolbar, orient='vertical').pack(side='left', fill='y', padx=8)
+        ttk.Separator(row0, orient='vertical').grid(
+            row=0, column=3, padx=8, pady=2, sticky='ns')
 
-        self._lbl_server_status = ttk.Label(toolbar, text='Server: Not started',
+        self._lbl_server_status = ttk.Label(row0, text='Server: Not started',
                                              foreground='gray')
-        self._lbl_server_status.pack(side='left', padx=4)
+        self._lbl_server_status.grid(row=0, column=4, padx=4, pady=2, sticky='w')
 
-        self._btn_open_browser = ttk.Button(toolbar, text='Open in Browser',
-                                              command=self._open_browser,
-                                              state='disabled')
-        self._btn_open_browser.pack(side='left', padx=4)
+        ttk.Separator(row0, orient='vertical').grid(
+            row=0, column=5, padx=8, pady=2, sticky='ns')
 
-        ttk.Separator(toolbar, orient='vertical').pack(side='left', fill='y', padx=8)
-        ttk.Button(toolbar, text='Settings',
-                    command=self._show_settings).pack(side='left', padx=2)
+        self._btn_settings = ttk.Button(row0, text='Settings',
+                                         command=self._show_settings)
+        self._btn_settings.grid(row=0, column=6, padx=2, pady=2, sticky='e')
+
+        # ── Row 1: Connection controls ────────────────────────────────────────
+        row1 = ttk.Frame(toolbar)
+        row1.pack(fill='x')
+
+        ttk.Label(row1, text='URL:').grid(row=0, column=0, padx=2, pady=2, sticky='e')
+
+        self._entry_url = ttk.Entry(row1, textvariable=self._server_url_var, width=42)
+        self._entry_url.grid(row=0, column=1, padx=2, pady=2, sticky='ew')
+        self._entry_url.bind('<Return>', lambda e: self._connect_to_url())
+
+        self._btn_connect = ttk.Button(row1, text='Connect',
+                                        command=self._connect_to_url)
+        self._btn_connect.grid(row=0, column=2, padx=2, pady=2, sticky='w')
+
+        ttk.Separator(row1, orient='vertical').grid(
+            row=0, column=3, padx=8, pady=2, sticky='ns')
+
+        self._btn_open_browser = ttk.Button(row1, text='Open in Browser',
+                                             command=self._open_browser,
+                                             state='disabled')
+        self._btn_open_browser.grid(row=0, column=4, padx=2, pady=2, sticky='e')
+
+        row1.columnconfigure(1, weight=1)
 
     def _build_tabs(self):
         self._notebook = ttk.Notebook(self.root)
@@ -312,6 +347,7 @@ class MainWindow:
             return
 
         self._update_api_url()
+        self._server_url_var.set(self.api.base_url)
         self._ensure_directories()
         self.logs_tab.add_log_line(f'Invoking: {self._command}')
         self._status_label.config(text='Starting server...')
@@ -331,8 +367,6 @@ class MainWindow:
 
         self._set_buttons_started()
         self._status_label.config(text='Connecting...')
-        self._monitoring = True
-        self.monitor_tab._start_monitoring()
 
         # Schedule health check after server starts
         self._health_check_timeout = 120
@@ -380,24 +414,20 @@ class MainWindow:
         self.root.after(0, self._handle_process_stopped)
 
     def _handle_process_stopped(self):
-        if self._monitoring:
-            self._monitoring = False
-            self.monitor_tab._stop_monitoring()
         self._set_buttons_stopped()
         self._status_label.config(text='Server stopped unexpectedly')
         self._lbl_server_status.config(text='Server: Crashed', foreground='red')
 
     def _stop_server(self):
-        """Stop the llama-server process."""
+        """Stop the llama-server process. Monitoring continues."""
         if self._health_check_id:
             self.root.after_cancel(self._health_check_id)
             self._health_check_id = None
 
         self.process.stop()
-        self._monitoring = False
-        self.monitor_tab._stop_monitoring()
         self._set_buttons_stopped()
         self._status_label.config(text='Server stopped')
+        self._lbl_server_status.config(text='Server: Disconnected', foreground='gray')
 
     def _restart_server(self):
         """Restart the server with current command."""
@@ -617,6 +647,42 @@ class MainWindow:
             self._lbl_server_status.config(text=f'Server: {url}', foreground='green')
             self._btn_open_browser.config(state='normal')
 
+    def _start_auto_monitor(self):
+        """Start monitoring at app launch, connecting to the configured URL."""
+        url = self._server_url_var.get().strip()
+        if url:
+            self.api.base_url = url.rstrip('/')
+        self._monitoring = True
+        self.monitor_tab._start_monitoring()
+        self._lbl_server_status.config(text='Monitor: waiting...', foreground='orange')
+
+    def _connect_to_url(self):
+        """Connect to the server URL entered in the toolbar."""
+        url = self._server_url_var.get().strip()
+        if not url:
+            return
+        self.api.base_url = url.rstrip('/')
+        self.logs_tab.add_log_line(f'Connecting to server: {self.api.base_url}')
+        self._lbl_server_status.config(text='Monitor: connecting...', foreground='orange')
+        if not self._monitoring:
+            self._monitoring = True
+            self.monitor_tab._start_monitoring()
+        # Force an immediate health check on the new URL
+        self._do_health_check()
+
+    def _do_health_check(self):
+        """Single-shot health check to update status bar."""
+        try:
+            health = self.api.health()
+            if health and health.get('status') == 'ok':
+                self._lbl_server_status.config(text='Server: Connected', foreground='green')
+                self._btn_open_browser.config(state='normal')
+                return
+        except Exception:
+            pass
+        self._lbl_server_status.config(text='Server: Disconnected', foreground='gray')
+        self._btn_open_browser.config(state='disabled')
+
     def _load_preferences(self):
         """Load saved preferences from file."""
         pref_path = os.path.expanduser('~/.llama-gui/preferences.json')
@@ -652,6 +718,10 @@ class MainWindow:
                 server_bin = prefs.get('server_bin', '')
                 if server_bin and hasattr(self.config_tab, '_server_bin_var'):
                     self.config_tab._server_bin_var.set(server_bin)
+                saved_url = prefs.get('server_url', '')
+                if saved_url:
+                    self._server_url_var.set(saved_url)
+                    self.api.base_url = saved_url.rstrip('/')
                 last_profile = prefs.get('last_profile', '')
                 if last_profile and hasattr(self.config_tab, '_current_profile'):
                     self.config_tab._current_profile = last_profile
@@ -684,6 +754,7 @@ class MainWindow:
             }
             for key in ('pp', 'tg', 'draft_pct', 'draft_tokens'):
                 prefs[f'graph_vis_{key}'] = self.monitor_tab._chart._graphs_visible.get(key, True)
+            prefs['server_url'] = self._server_url_var.get().strip() or 'http://127.0.0.1:8080'
             with open(pref_path, 'w') as f:
                 json.dump(prefs, f)
         except Exception:
@@ -699,6 +770,8 @@ class MainWindow:
         """Handle window close."""
         if not self.config_tab.on_close_request():
             return
+        self._monitoring = False
+        self.monitor_tab._stop_monitoring()
         self.sys_monitor.stop()
         if self.process.is_running:
             if messagebox.askyesno('Quit', 'Server is running. Stop and quit?'):
