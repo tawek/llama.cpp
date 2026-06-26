@@ -3548,43 +3548,45 @@ private:
         const int ret = llama_decode(ctx_tgt, batch_view);
 
         if (ret != 0) {
-            {
-                std::string err;
+            std::string err;
 
-                if (n_batch == 1 && ret == 1) {
-                    // TODO: try to terminate only the largest active slot/sequence and continue with the rest
-                    //       need to remove the tokens from the current batch too
-                    err = "Context size has been exceeded.";
-                }
+            if (n_batch == 1 && ret == 1) {
+                // TODO: try to terminate only the largest active slot/sequence and continue with the rest
+                //       need to remove the tokens from the current batch too
+                err = "Context size has been exceeded.";
+            }
 
-                if (ret == -1) {
-                    err = "Invalid input batch.";
-                }
+            if (ret == -1) {
+                err = "Invalid input batch.";
+            }
 
-                if (ret < -1) {
-                    // TODO: update slot state based on llama_memory_seq_pos_min() and llama_memory_seq_pos_max()
-                    err = "Compute error.";
-                }
+            if (ret == -1) {
+                err = "Invalid input batch.";
+            }
 
-                // TODO: handle ret == 2 (abort) when we start aborting
+            if (ret < -1) {
+                // TODO: update slot state based on llama_memory_seq_pos_min() and llama_memory_seq_pos_max()
+                err = "Compute error.";
+            }
 
-                if (!err.empty()) {
-                    SRV_ERR("%s off = %d, n_batch = %d, ret = %d\n", err.c_str(), off, n_batch, ret);
+            // TODO: handle ret == 2 (abort) when we start aborting
 
-                    for (auto & slot : slots) {
-                        if (slot.is_processing()) {
-                            send_error(slot, err);
-                            slot.release();
+            if (!err.empty()) {
+                SRV_ERR("%s off = %d, n_batch = %d, ret = %d\n", err.c_str(), off, n_batch, ret);
 
-                            // note: it's complicated to keep track of how much of the current batch has been
-                            //       processed before the error occurred, so we simply clear the entire context
-                            slot.prompt_clear(false);
-                        }
+                for (auto & slot : slots) {
+                    if (slot.is_processing()) {
+                        send_error(slot, err);
+                        slot.release();
+
+                        // note: it's complicated to keep track of how much of the current batch has been
+                        //       processed before the error occurred, so we simply clear the entire context
+                        slot.prompt_clear(false);
                     }
-
-                    // stop, do not retry with smaller batch size
-                    throw std::runtime_error(err);
                 }
+
+                // stop, do not retry with smaller batch size
+                throw std::runtime_error(err);
             }
 
             // retry with half the batch size to try to find a free slot in the KV cache
@@ -3722,7 +3724,9 @@ private:
                 slot.t_print_last = t_now;
                 slot.n_decoded_last = 0;
                 slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
-                metrics.on_prompt_eval(slot);
+                metrics.on_pp_eval(slot.id,
+                                   slot.t_prompt_processing,
+                                   (uint64_t) slot.prompt.n_tokens());
             }
 
             slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
@@ -3740,7 +3744,7 @@ private:
                 // release slot because of stop condition
                 slot.print_timings();
                 send_final_response(slot);
-                metrics.on_prediction(slot);
+                metrics.on_tg_done(slot.id, slot.t_token_generation);
                 slot.release();
 
                 return;
@@ -3810,13 +3814,18 @@ private:
                     }
                 }
 
-                if (trace > 0) {
-                    SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
-                }
-
-                common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
-
                 slot.spec_draft = std::move(accepted);
+            }
+
+            // notify speculative implementations of accepted tokens
+            {
+                const uint16_t n_accepted = (uint16_t)(slot.spec_draft.size() - 1);
+                if (n_accepted > 0) {
+                    if (trace > 0) {
+                        SLT_INF(slot, "accepted %2u/%2zu draft tokens\n", n_accepted, n_draft);
+                    }
+                    common_speculative_accept(spec.get(), slot.id, n_accepted);
+                }
             }
 
             const int64_t t_now = ggml_time_us();
@@ -3859,6 +3868,7 @@ private:
 
                 slot.n_decoded += 1;
                 metrics.on_tg_token(slot.id);
+                slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
 
                 if (slot.n_decoded == 1) {
                     slot.t_start_generation = t_now;
@@ -3870,16 +3880,6 @@ private:
                                        (uint64_t) slot.prompt.n_tokens());
                 }
 
-                slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
-
-                completion_token_output result;
-                result.tok          = id;
-                result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
-                result.prob         = 1.0f; // TODO: set it here instead of doing inside populate_token_probs
-
-                if (slot.task->params.sampling.n_probs > 0) {
-                    populate_token_probs(slot, result, slot.task->params.post_sampling_probs, params_base.special, tok_idx);
-                }
                 if (!process_token(result, slot)) {
                     slot.print_timings();
                     send_final_response(slot);
@@ -3889,121 +3889,7 @@ private:
                     return;
                 }
             }
-
-            slot.print_timings_tg();
-
-                // save the original draft size
-                const size_t n_draft = slot.spec_draft.size();
-
-                GGML_ASSERT(n_draft > 0);
-
-                // verify and try to accept the draft
-                {
-                    // save the sampler sampler state in case we need to restore it
-                    common_sampler_ptr smpl_save(common_sampler_clone(slot.smpl.get()));
-
-                    GGML_ASSERT(slot.spec_i_batch.size() == n_draft + 1);
-                    auto accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft);
-                    slot.spec_i_batch.clear();
-
-                    GGML_ASSERT(accepted.size() >= 1);
-
-                    const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
-
-                    const bool use_ckpt_tgt =
-                        ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
-                       (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && n_rollback > llama_n_rs_seq(ctx_tgt));
-                    // check for partial draft acceptance
-                    if (n_rollback > 0) {
-                        if (use_ckpt_tgt) {
-                            if (trace > 0) {
-                                SLT_INF(slot, "accepted %2zu/%2zu draft tokens (restore checkpoint)\n", accepted.size() - 1, slot.spec_draft.size());
-                            }
-
-                            // partial acceptance is not supported by the context -> truncate the draft and restore the state
-                            slot.spec_draft = std::move(accepted);
-
-                            const auto & ckpt = slot.spec_ckpt;
-
-                            SLT_DBG(slot, "restoring speculative checkpoint (pos_min = %d, pos_max = %d, size = %zu)\n", ckpt.pos_min, ckpt.pos_max, ckpt.size());
-
-                            {
-                                ckpt.load_tgt(slot.ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-
-                                common_context_seq_rm(slot.ctx_tgt, slot.id, ckpt.pos_max + 1, -1);
-                            }
-
-                            if (slot.ctx_dft) {
-                                ckpt.load_dft(slot.ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-
-                                common_context_seq_rm(slot.ctx_dft, slot.id, ckpt.pos_max + 1, -1);
-                            }
-
-                            slot.prompt.tokens.keep_first(ckpt.n_tokens);
-                            slot.smpl = std::move(smpl_save);
-
-                            continue;
-                        }
-                    }
-
-                    if (trace > 0) {
-                        SLT_INF(slot, "accepted %2zu/%2zu draft tokens\n", accepted.size() - 1, n_draft);
-                    }
-
-                    common_speculative_accept(spec.get(), slot.id, accepted.size() - 1);
-
-                    slot.spec_draft = std::move(accepted);
-                }
-
-                const int64_t t_now = ggml_time_us();
-
-                const auto ids = std::move(slot.spec_draft);
-
-                slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
-
-                // update how many tokens out of those tested were accepted
-                slot.n_draft_accepted += ids.size() - 1;
-                metrics.on_draft_accepted(slot.id, ids.size() - 1);
-
-                // add accepted tokens to the prompt
-                slot.prompt.tokens.keep_first(slot.prompt.n_tokens() - n_draft);
-                slot.prompt.tokens.insert({ids.begin(), ids.end() - 1});
-
-                slot.sampled = ids.back(); // last accepted token
-                SLT_DBG(slot, "add accepted tokens: sampled=%d, ids.size=%zu, n_draft=%zu\n", slot.sampled, ids.size(), n_draft);
-
-                common_context_seq_rm(slot.ctx_tgt, slot.id, slot.prompt.tokens.pos_next(), -1);
-                if (slot.ctx_dft) {
-                    common_context_seq_rm(slot.ctx_dft, slot.id, slot.prompt.tokens.pos_next(), -1);
-                }
-
-                for (size_t i = 0; i < ids.size(); ++i) {
-                    completion_token_output result;
-
-                    result.tok          = ids[i];
-                    result.text_to_send = common_token_to_piece(slot.ctx_tgt, result.tok, accept_special_token(slot, result.tok));
-                    result.prob         = 1.0f; // set later
-
-                    // TODO: set result.probs
-
-                    slot.n_decoded += 1;
-                    metrics.on_tg_token(slot.id);
-
-                    if (!process_token(result, slot)) {
-                        slot.print_timings();
-                        send_final_response(slot);
-                        metrics.on_tg_done(slot.id, slot.t_token_generation);
-                        slot.release();
-
-                        break;
-                    }
-                }
-
-                slot.print_timings_tg();
-
-                SLT_DBG(slot, "accepted %d/%d draft tokens, new n_tokens = %d\n", (int) ids.size() - 1, (int) n_draft, slot.prompt.n_tokens());
-            }
-        }
+        });
 
         SRV_DBG("%s", "run slots completed\n");
     }
