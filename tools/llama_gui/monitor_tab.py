@@ -314,7 +314,8 @@ class MetricsChart(ttk.Frame):
 
         if 'pp' in rects:
             r = rects['pp']
-            all_pp = [v for v in self._prompt if v is not None] + self._raw_prompt
+            all_pp = ([v for v in self._prompt if v is not None]
+                      + [v for v in self._raw_prompt if v is not None])
             max_pp = self._nice_ceil(max(all_pp)) if all_pp else 10.0
             to_y_pp = make_to_y(r[1], r[3], max_pp)
             draw_line(self._raw_prompt, self.C_PROMPT_RAW, to_y_pp, width=0.7, smooth=False)
@@ -324,7 +325,9 @@ class MetricsChart(ttk.Frame):
             r = rects['tg']
             all_vals = ([v for v in self._gen + self._draft_gen + self._draft_acc
                          if v is not None]
-                        + self._raw_gen + self._raw_draft_gen + self._raw_draft_acc)
+                        + [v for v in self._raw_gen if v is not None]
+                        + [v for v in self._raw_draft_gen if v is not None]
+                        + [v for v in self._raw_draft_acc if v is not None])
             max_tg = self._nice_ceil(max(all_vals)) if all_vals else 10.0
             to_y_tg = make_to_y(r[1], r[3], max_tg)
             draw_line(self._raw_gen, self.C_GEN_RAW, to_y_tg, width=0.7, smooth=False)

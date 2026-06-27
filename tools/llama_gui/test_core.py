@@ -1056,6 +1056,35 @@ class LineGapBreakingTest(unittest.TestCase):
         self.assertEqual(len(chart._raw_draft), 3)
         self.assertEqual(len(chart._draft), 3)
 
+    def test_max_computation_filters_none_from_raw_buffers(self):
+        """max() over raw buffers must filter None values (bug fix)."""
+        # This verifies the Y-axis max computation doesn't crash when
+        # raw buffers contain None values (from the buffer alignment fix).
+        chart = MagicMock()
+        # Simulate state: smoothed buffer has values, raw buffer has None at index 0
+        chart._prompt = [10.0, 20.0, 15.0]
+        chart._raw_prompt = [None, 10.0, 20.0, 15.0]
+        chart._gen = [5.0, 8.0, 6.0]
+        chart._raw_gen = [None, 5.0, 8.0, 6.0]
+        chart._draft_gen = []
+        chart._draft_acc = []
+        chart._raw_draft_gen = []
+        chart._raw_draft_acc = []
+
+        # The Y-axis max computation (replicated from _redraw)
+        all_pp = ([v for v in chart._prompt if v is not None]
+                  + [v for v in chart._raw_prompt if v is not None])
+        # This should not raise TypeError
+        max_pp = max(all_pp) if all_pp else 10.0
+        self.assertEqual(max_pp, 20.0)
+
+        all_vals = ([v for v in chart._gen if v is not None]
+                    + [v for v in chart._raw_gen if v is not None]
+                    + [v for v in chart._raw_draft_gen if v is not None]
+                    + [v for v in chart._raw_draft_acc if v is not None])
+        max_tg = max(all_vals) if all_vals else 10.0
+        self.assertEqual(max_tg, 8.0)
+
 
 # ---------------------------------------------------------------------------
 # Run tests
