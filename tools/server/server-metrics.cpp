@@ -15,6 +15,7 @@ void server_slot_metrics::reset() {
     t_tg_ms         .store(0, std::memory_order_relaxed);
     n_draft         .store(0, std::memory_order_relaxed);
     n_draft_accepted.store(0, std::memory_order_relaxed);
+    t_draft_ms      .store(0, std::memory_order_relaxed);
     t_start_pp      .store(0, std::memory_order_relaxed);
 }
 
@@ -101,6 +102,11 @@ void server_metrics::on_draft_accepted(int slot_id, size_t n) {
     slot(slot_id).n_draft_accepted.fetch_add(n, std::memory_order_relaxed);
 }
 
+void server_metrics::on_draft_time(int slot_id, double t_ms) {
+    t_draft_ms.fetch_add((uint64_t) t_ms, std::memory_order_relaxed);
+    slot(slot_id).t_draft_ms.store((uint64_t) t_ms, std::memory_order_relaxed);
+}
+
 void server_metrics::on_decoded(uint64_t n_busy, uint64_t tokens_max) {
     n_decode        .fetch_add(1,      std::memory_order_relaxed);
     n_busy_slots_acc.fetch_add(n_busy, std::memory_order_relaxed);
@@ -123,6 +129,7 @@ void server_metrics::reset_global() {
     t_tg_ms         .store(0, std::memory_order_relaxed);
     n_draft         .store(0, std::memory_order_relaxed);
     n_draft_accepted.store(0, std::memory_order_relaxed);
+    t_draft_ms      .store(0, std::memory_order_relaxed);
     n_decode        .store(0, std::memory_order_relaxed);
     n_busy_slots_acc.store(0, std::memory_order_relaxed);
     // n_tokens_max, n_processing_slots, n_tasks_deferred intentionally kept
@@ -176,6 +183,7 @@ std::string server_metrics::to_prometheus() const {
 
     const uint64_t s_n_draft_rejected = s_n_draft >= s_n_draft_accepted
                                       ? s_n_draft - s_n_draft_accepted : 0;
+    const uint64_t s_t_draft_ms     = t_draft_ms.load(std::memory_order_relaxed);
     const double   s_pp_rate   = (s_n_pp && s_t_pp_ms)
                                  ? 1.e3 / s_t_pp_ms * s_n_pp : 0.0;
     const double   s_tg_rate   = (s_n_tg && s_t_tg_ms)
@@ -214,6 +222,7 @@ std::string server_metrics::to_prometheus() const {
     emit("counter", "n_tokens_draft",                 "Total speculative draft tokens proposed.",       (double) s_n_draft);
     emit("counter", "n_tokens_draft_accepted",        "Total speculative draft tokens accepted.",       (double) s_n_draft_accepted);
     emit("counter", "n_tokens_draft_rejected",        "Total speculative draft tokens rejected.",       (double) s_n_draft_rejected);
+    emit("counter", "tokens_draft_seconds_total",     "Total draft inference time (s).",                (double) s_t_draft_ms / 1.e3);
 
     // ── Global gauges ──────────────────────────────────────────────────────
     emit("gauge", "prompt_tokens_seconds",    "Average prompt throughput in tokens/s.",           s_pp_rate);
@@ -227,7 +236,7 @@ std::string server_metrics::to_prometheus() const {
     if (n_slots_ > 0) {
         // Snapshot all slot values first.
         struct SlotSnap {
-            uint64_t n_pp, n_prompt_length, t_pp_ms, n_tg, t_tg_ms, n_draft, n_draft_accepted, n_draft_rejected;
+            uint64_t n_pp, n_prompt_length, t_pp_ms, n_tg, t_tg_ms, n_draft, n_draft_accepted, n_draft_rejected, t_draft_ms;
         };
         std::vector<SlotSnap> snaps(n_slots_);
         for (int i = 0; i < n_slots_; ++i) {
@@ -239,6 +248,7 @@ std::string server_metrics::to_prometheus() const {
             snaps[i].t_tg_ms          = s.t_tg_ms         .load(std::memory_order_relaxed);
             snaps[i].n_draft          = s.n_draft         .load(std::memory_order_relaxed);
             snaps[i].n_draft_accepted = s.n_draft_accepted.load(std::memory_order_relaxed);
+            snaps[i].t_draft_ms       = s.t_draft_ms      .load(std::memory_order_relaxed);
             snaps[i].n_draft_rejected = snaps[i].n_draft >= snaps[i].n_draft_accepted
                                       ? snaps[i].n_draft - snaps[i].n_draft_accepted : 0;
         }
@@ -287,6 +297,9 @@ std::string server_metrics::to_prometheus() const {
         emit_labeled("gauge", "slot_n_tokens_draft_rejected",
                      "Draft tokens rejected for the current/last task per slot.",
                      "id_slot", irows(&SlotSnap::n_draft_rejected));
+        emit_labeled("gauge", "slot_tokens_draft_seconds",
+                      "Draft inference time (s) for the current/last task per slot.",
+                      "id_slot", trows(&SlotSnap::t_draft_ms));
     }
 
     return out.str();

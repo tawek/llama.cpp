@@ -290,6 +290,7 @@ struct server_slot {
 
     double t_prompt_processing = 0.0; // ms
     double t_token_generation = 0.0;  // ms
+    double t_draft = 0.0;             // draft inference time (ms)
 
     std::function<void(int /* id_slot */)> callback_on_release;
 
@@ -326,6 +327,7 @@ struct server_slot {
         n_draft_accepted = 0;
         n_draft_verif_steps = 0;
         n_accepted_per_pos.clear();
+        t_draft = 0.0;
 
         task_prev = std::move(task);
         task.reset();
@@ -2919,7 +2921,14 @@ private:
 
         // generate the actual drafts (if any)
         {
+            const int64_t t_start = ggml_time_us();
             common_speculative_draft(spec.get());
+            const int64_t t_ms = (ggml_time_us() - t_start) / 1000;
+
+            for (auto & slot : drafting) {
+                slot.t_draft = t_ms;
+                metrics.on_draft_time(slot.id, t_ms);
+            }
         }
 
         // make checkpoints if needed

@@ -22,6 +22,7 @@ struct server_slot_metrics {
     std::atomic<uint64_t> t_tg_ms          {0}; // token generation time (ms)
     std::atomic<uint64_t> n_draft          {0}; // speculative draft tokens proposed
     std::atomic<uint64_t> n_draft_accepted {0}; // speculative draft tokens accepted
+    std::atomic<uint64_t> t_draft_ms       {0}; // draft inference time (ms)
 
     // Wall-clock start time of the current PP phase (µs, from ggml_time_us()).
     // Set by on_pp_start_slot() when a slot transitions to PROCESSING_PROMPT.
@@ -78,6 +79,7 @@ struct server_metrics {
     // Speculative decoding.
     std::atomic<uint64_t> n_draft          {0}; // total draft tokens proposed
     std::atomic<uint64_t> n_draft_accepted {0}; // draft tokens accepted
+    std::atomic<uint64_t> t_draft_ms       {0}; // total draft inference time (ms)
 
     // llama_decode() call count and busy-slot accumulator.
     std::atomic<uint64_t> n_decode         {0};
@@ -127,6 +129,7 @@ struct server_metrics {
     // Speculative decoding counters.
     void on_draft_tokens  (int slot_id, size_t n); // proposed
     void on_draft_accepted(int slot_id, size_t n); // accepted
+    void on_draft_time    (int slot_id, double t_ms); // draft inference time
 
     // Called once per llama_decode() call.
     //   n_busy      = number of slots that were processing during this decode
