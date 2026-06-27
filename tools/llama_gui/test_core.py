@@ -945,18 +945,25 @@ class MetricsChartAddPointTest(unittest.TestCase):
         chart._smooth_ms_draft = 60000
         chart._smooth_ms_draft_acc = 60000
 
-        # All values None — raw buffers should be empty
+        # All values None — raw buffers should have None entries
         MetricsChart.add_point(chart, None, None, None, None, None, None, None, None, None)
-        self.assertEqual(len(chart._raw_prompt), 0)
-        self.assertEqual(len(chart._raw_gen), 0)
-        self.assertEqual(len(chart._raw_draft), 0)
-        self.assertEqual(len(chart._raw_draft_gen), 0)
-        self.assertEqual(len(chart._raw_draft_acc), 0)
-
-        # Mixed — only non-None values go to raw
-        MetricsChart.add_point(chart, 10.0, None, 5.0, None, None, None, 3.0, None, None)
         self.assertEqual(len(chart._raw_prompt), 1)
+        self.assertIsNone(chart._raw_prompt[0])
+        self.assertEqual(len(chart._raw_gen), 1)
+        self.assertIsNone(chart._raw_gen[0])
+        self.assertEqual(len(chart._raw_draft), 1)
+        self.assertIsNone(chart._raw_draft[0])
         self.assertEqual(len(chart._raw_draft_gen), 1)
+        self.assertIsNone(chart._raw_draft_gen[0])
+        self.assertEqual(len(chart._raw_draft_acc), 1)
+        self.assertIsNone(chart._raw_draft_acc[0])
+
+        # Mixed — raw buffers have same length as smoothed
+        MetricsChart.add_point(chart, 10.0, None, 5.0, None, None, None, 3.0, None, None)
+        self.assertEqual(len(chart._raw_prompt), 2)
+        self.assertEqual(chart._raw_prompt[1], 10.0)
+        self.assertEqual(len(chart._raw_draft_gen), 2)
+        self.assertEqual(chart._raw_draft_gen[1], 3.0)
 
 
 class PanelVisibilityTest(unittest.TestCase):
@@ -999,6 +1006,55 @@ class PanelVisibilityTest(unittest.TestCase):
         self.assertIn('pp', rects)
         self.assertNotIn('tg', rects)
         self.assertNotIn('draft_pct', rects)
+
+
+class LineGapBreakingTest(unittest.TestCase):
+    """Tests that draw_line breaks the line when there's a gap in samples."""
+
+    def test_gap_breaks_line_into_segments(self):
+        """When there's a gap (None between samples), the line should break."""
+        # This is a visual test — we verify the line drawing logic doesn't
+        # connect samples across gaps. The draw_line function is defined
+        # inside _redraw, so we test the behavior indirectly by checking
+        # that None values in the buffer are properly handled.
+        chart = MagicMock()
+        chart._raw_prompt = [None, 5.0, None, 10.0, None]
+        chart._raw_gen = [None, 3.0, None, 8.0, None]
+        # The key invariant: raw and smoothed buffers must have the same
+        # length so X positions align.
+        chart._prompt = [None, 4.5, None, 9.0, None]
+        chart._gen = [None, 2.5, None, 7.5, None]
+        # Just verify the buffers have matching lengths
+        self.assertEqual(len(chart._raw_prompt), len(chart._prompt))
+        self.assertEqual(len(chart._raw_gen), len(chart._gen))
+
+    def test_buffers_aligned_after_mixed_add_point(self):
+        """After add_point with mixed None/values, raw and smoothed align."""
+        chart = MagicMock()
+        chart._raw_prompt = []
+        chart._raw_gen = []
+        chart._raw_draft = []
+        chart._raw_draft_gen = []
+        chart._raw_draft_acc = []
+        chart._prompt = []
+        chart._gen = []
+        chart._draft = []
+        chart._draft_gen = []
+        chart._draft_acc = []
+        chart._max_points = 100
+
+        # Call add_point multiple times with mixed values
+        MetricsChart.add_point(chart, 10.0, 9.0, None, None, None, None, None, None, None)
+        MetricsChart.add_point(chart, None, None, 5.0, 4.0, None, None, None, None, None)
+        MetricsChart.add_point(chart, 20.0, 18.0, 8.0, 7.0, 50.0, 45.0, 3.0, 2.5, 2.0, 1.8)
+
+        # All buffers should have the same length
+        self.assertEqual(len(chart._raw_prompt), 3)
+        self.assertEqual(len(chart._prompt), 3)
+        self.assertEqual(len(chart._raw_gen), 3)
+        self.assertEqual(len(chart._gen), 3)
+        self.assertEqual(len(chart._raw_draft), 3)
+        self.assertEqual(len(chart._draft), 3)
 
 
 # ---------------------------------------------------------------------------

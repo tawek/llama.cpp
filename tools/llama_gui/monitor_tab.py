@@ -89,16 +89,11 @@ class MetricsChart(ttk.Frame):
                   draft_pct_raw, draft_pct,
                   draft_gen_raw=0.0, draft_gen=0.0,
                   draft_acc_raw=0.0, draft_acc=0.0):
-        if prompt_tps_raw is not None:
-            self._raw_prompt.append(max(0.0, prompt_tps_raw))
-        if gen_tps_raw is not None:
-            self._raw_gen.append(max(0.0, gen_tps_raw))
-        if draft_pct_raw is not None:
-            self._raw_draft.append(max(0.0, min(100.0, draft_pct_raw)))
-        if draft_gen_raw is not None:
-            self._raw_draft_gen.append(max(0.0, draft_gen_raw))
-        if draft_acc_raw is not None:
-            self._raw_draft_acc.append(max(0.0, draft_acc_raw))
+        self._raw_prompt.append(max(0.0, prompt_tps_raw) if prompt_tps_raw is not None else None)
+        self._raw_gen.append(max(0.0, gen_tps_raw) if gen_tps_raw is not None else None)
+        self._raw_draft.append(max(0.0, min(100.0, draft_pct_raw)) if draft_pct_raw is not None else None)
+        self._raw_draft_gen.append(max(0.0, draft_gen_raw) if draft_gen_raw is not None else None)
+        self._raw_draft_acc.append(max(0.0, draft_acc_raw) if draft_acc_raw is not None else None)
 
         self._prompt.append(prompt_tps if prompt_tps is not None else None)
         self._gen.append(gen_tps if gen_tps is not None else None)
@@ -297,11 +292,23 @@ class MetricsChart(ttk.Frame):
             return to_y
 
         def draw_line(data, color, to_y, width=1.5, smooth=True):
+            # Break the line when there's a gap in samples (no time-counter
+            # advance). A gap of more than 1 slot means the time counter
+            # didn't change between polls — the line should not connect
+            # those points.
             coords = []
+            prev_i = None
             for i, v in enumerate(data):
                 if v is None:
+                    prev_i = None
                     continue
+                if prev_i is not None and i - prev_i > 1:
+                    # Gap detected — emit current line, then start a new one
+                    if len(coords) >= 4:
+                        c.create_line(*coords, fill=color, width=width, smooth=smooth)
+                    coords = []
                 coords.extend([to_x(i), to_y(v)])
+                prev_i = i
             if len(coords) >= 4:
                 c.create_line(*coords, fill=color, width=width, smooth=smooth)
 
