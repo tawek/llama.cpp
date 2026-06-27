@@ -89,11 +89,16 @@ class MetricsChart(ttk.Frame):
                   draft_pct_raw, draft_pct,
                   draft_gen_raw=0.0, draft_gen=0.0,
                   draft_acc_raw=0.0, draft_acc=0.0):
-        self._raw_prompt.append(prompt_tps_raw if prompt_tps_raw is not None else 0.0)
-        self._raw_gen.append(gen_tps_raw if gen_tps_raw is not None else 0.0)
-        self._raw_draft.append(draft_pct_raw if draft_pct_raw is not None else 0.0)
-        self._raw_draft_gen.append(max(0.0, draft_gen_raw))
-        self._raw_draft_acc.append(max(0.0, draft_acc_raw))
+        if prompt_tps_raw is not None:
+            self._raw_prompt.append(max(0.0, prompt_tps_raw))
+        if gen_tps_raw is not None:
+            self._raw_gen.append(max(0.0, gen_tps_raw))
+        if draft_pct_raw is not None:
+            self._raw_draft.append(max(0.0, min(100.0, draft_pct_raw)))
+        if draft_gen_raw is not None:
+            self._raw_draft_gen.append(max(0.0, draft_gen_raw))
+        if draft_acc_raw is not None:
+            self._raw_draft_acc.append(max(0.0, draft_acc_raw))
 
         self._prompt.append(prompt_tps if prompt_tps is not None else None)
         self._gen.append(gen_tps if gen_tps is not None else None)
