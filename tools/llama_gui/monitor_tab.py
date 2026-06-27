@@ -66,6 +66,7 @@ class MetricsChart(ttk.Frame):
         super().__init__(parent)
         self._time_window_s  = time_window_s
         self._max_points     = time_window_s * (1000 // self.TICK_MS)
+        self._times         = []
         self._raw_prompt    = []
         self._raw_gen       = []
         self._raw_draft     = []
@@ -88,7 +89,10 @@ class MetricsChart(ttk.Frame):
                   gen_tps_raw, gen_tps,
                   draft_pct_raw, draft_pct,
                   draft_gen_raw=0.0, draft_gen=0.0,
-                  draft_acc_raw=0.0, draft_acc=0.0):
+                  draft_acc_raw=0.0, draft_acc=0.0,
+                  sample_t=None):
+        sample_t = time.monotonic() if sample_t is None else sample_t
+        self._times.append(sample_t)
         self._raw_prompt.append(max(0.0, prompt_tps_raw) if prompt_tps_raw is not None else None)
         self._raw_gen.append(max(0.0, gen_tps_raw) if gen_tps_raw is not None else None)
         self._raw_draft.append(max(0.0, min(100.0, draft_pct_raw)) if draft_pct_raw is not None else None)
@@ -101,18 +105,22 @@ class MetricsChart(ttk.Frame):
         self._draft_gen.append(draft_gen if draft_gen is not None else None)
         self._draft_acc.append(draft_acc if draft_acc is not None else None)
 
-        if len(self._prompt) > self._max_points:
-            trim = self._max_points
-            self._raw_prompt    = self._raw_prompt[-trim:]
-            self._raw_gen       = self._raw_gen[-trim:]
-            self._raw_draft     = self._raw_draft[-trim:]
-            self._raw_draft_gen = self._raw_draft_gen[-trim:]
-            self._raw_draft_acc = self._raw_draft_acc[-trim:]
-            self._prompt        = self._prompt[-trim:]
-            self._gen           = self._gen[-trim:]
-            self._draft         = self._draft[-trim:]
-            self._draft_gen     = self._draft_gen[-trim:]
-            self._draft_acc     = self._draft_acc[-trim:]
+        cutoff = sample_t - self._time_window_s
+        drop = 0
+        while drop < len(self._times) and self._times[drop] < cutoff:
+            drop += 1
+        if drop:
+            self._times         = self._times[drop:]
+            self._raw_prompt    = self._raw_prompt[drop:]
+            self._raw_gen       = self._raw_gen[drop:]
+            self._raw_draft     = self._raw_draft[drop:]
+            self._raw_draft_gen = self._raw_draft_gen[drop:]
+            self._raw_draft_acc = self._raw_draft_acc[drop:]
+            self._prompt        = self._prompt[drop:]
+            self._gen           = self._gen[drop:]
+            self._draft         = self._draft[drop:]
+            self._draft_gen     = self._draft_gen[drop:]
+            self._draft_acc     = self._draft_acc[drop:]
         self._redraw()
 
     def clear(self):
@@ -121,6 +129,7 @@ class MetricsChart(ttk.Frame):
         self._raw_draft.clear()
         self._raw_draft_gen.clear()
         self._raw_draft_acc.clear()
+        self._times.clear()
         self._prompt.clear()
         self._gen.clear()
         self._draft.clear()
@@ -132,17 +141,6 @@ class MetricsChart(ttk.Frame):
         """Change the visible time window; trims or pads history accordingly."""
         self._time_window_s = max(10, seconds)
         new_max = self._time_window_s * (1000 // self.TICK_MS)
-        if new_max < self._max_points:
-            self._raw_prompt    = self._raw_prompt[-new_max:]
-            self._raw_gen       = self._raw_gen[-new_max:]
-            self._raw_draft     = self._raw_draft[-new_max:]
-            self._raw_draft_gen = self._raw_draft_gen[-new_max:]
-            self._raw_draft_acc = self._raw_draft_acc[-new_max:]
-            self._prompt        = self._prompt[-new_max:]
-            self._gen           = self._gen[-new_max:]
-            self._draft         = self._draft[-new_max:]
-            self._draft_gen     = self._draft_gen[-new_max:]
-            self._draft_acc     = self._draft_acc[-new_max:]
         self._max_points = new_max
         self._redraw()
 
@@ -166,20 +164,28 @@ class MetricsChart(ttk.Frame):
         """Return ordered dict of panel_key -> (x0, y0, x1, y1) for visible panels."""
         ml, mr = self.MARGIN_L, self.MARGIN_R
         mt, mb, gap = self.MARGIN_T, self.MARGIN_B, self.GAP
+        now = time.monotonic()
+        t_min = now - self._time_window_s
 
-        # Filter panels: must be visible and have at least one non-None sample.
+        def has_visible_data(data):
+            return any(t >= t_min and t <= now and v is not None
+                       for t, v in zip(self._times, data))
+
+        any_data = (
+            has_visible_data(self._prompt) or
+            has_visible_data(self._gen) or
+            has_visible_data(self._draft) or
+            has_visible_data(self._draft_gen) or
+            has_visible_data(self._draft_acc)
+        )
+        if not any_data:
+            return {}
+
         visible = []
         for k in self._PANEL_ORDER:
             if not self._graphs_visible.get(k, True):
                 continue
-            if k == 'pp' and any(v is not None for v in self._prompt):
-                visible.append(k)
-            elif k == 'tg' and (any(v is not None for v in self._gen) or
-                                any(v is not None for v in self._draft_gen) or
-                                any(v is not None for v in self._draft_acc)):
-                visible.append(k)
-            elif k == 'draft_pct' and any(v is not None for v in self._draft):
-                visible.append(k)
+            visible.append(k)
 
         if not visible:
             return {}
@@ -209,12 +215,18 @@ class MetricsChart(ttk.Frame):
         mr     = self.MARGIN_R
         plot_w = W - ml - mr
         n_gl   = 4
+        now    = time.monotonic()
+        t_min  = now - self._time_window_s
 
         rects = self._compute_panel_rects(W, H)
         if not rects:
             c.create_text(W // 2, H // 2, text='No data',
                           fill=self.C_TEXT, font=('Consolas', 10))
             return
+
+        def visible_values(data):
+            return [v for t, v in zip(self._times, data)
+                    if t >= t_min and t <= now and v is not None]
 
         # X-axis labels below the last visible panel
         last_y1 = list(rects.values())[-1][3]
@@ -226,9 +238,11 @@ class MetricsChart(ttk.Frame):
         # ── Panel backgrounds, grids, and axis labels ─────────────────────────
         for key, (x0, y0, x1, y1) in rects.items():
             c.create_rectangle(x0, y0, x1, y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
+            panel_has_data = False
 
             if key == 'pp':
-                valid = [v for v in self._prompt if v is not None]
+                valid = visible_values(self._prompt)
+                panel_has_data = bool(valid)
                 max_val = self._nice_ceil(max(valid)) if valid else 10.0
                 self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
                                 fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
@@ -238,9 +252,10 @@ class MetricsChart(ttk.Frame):
                               fill=self.C_PROMPT, font=('Consolas', 7))
 
             elif key == 'tg':
-                valid_gen = [v for v in self._gen if v is not None]
-                valid_dg = [v for v in self._draft_gen if v is not None]
-                valid_da = [v for v in self._draft_acc if v is not None]
+                valid_gen = visible_values(self._gen)
+                valid_dg = visible_values(self._draft_gen)
+                valid_da = visible_values(self._draft_acc)
+                panel_has_data = bool(valid_gen or valid_dg or valid_da)
                 max_val = self._nice_ceil(max(valid_gen)) if valid_gen else 10.0
                 max_dt = (self._nice_ceil(max(valid_dg + valid_da))
                           if valid_dg or valid_da else 10.0)
@@ -257,6 +272,7 @@ class MetricsChart(ttk.Frame):
                               fill=self.C_DRAFT_ACC, font=('Consolas', 7))
 
             elif key == 'draft_pct':
+                panel_has_data = bool(visible_values(self._draft))
                 self._draw_grid(c, x0, y0, x1, y1, ml, 100.0, n_gl,
                                 fmt=lambda v: f'{v:.0f}%')
                 c.create_text(6, (y0 + y1) // 2, text='Draft %', angle=90,
@@ -265,7 +281,8 @@ class MetricsChart(ttk.Frame):
                               fill=self.C_DRAFT, font=('Consolas', 7))
 
             elif key == 'draft_tokens':
-                all_dt  = [v for v in self._draft_gen + self._draft_acc if v is not None]
+                all_dt  = visible_values(self._draft_gen) + visible_values(self._draft_acc)
+                panel_has_data = bool(all_dt)
                 max_dt  = self._nice_ceil(max(all_dt)) if all_dt else 10.0
                 self._draw_grid(c, x0, y0, x1, y1, ml, max_dt, n_gl,
                                 fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
@@ -276,15 +293,17 @@ class MetricsChart(ttk.Frame):
                 c.create_text(x1 - 4, y0 + 18, text='acc', anchor='e',
                               fill=self.C_DRAFT_ACC, font=('Consolas', 7))
 
+            if not panel_has_data:
+                c.create_text((x0 + x1) // 2, (y0 + y1) // 2, text='No data',
+                              fill=self.C_TEXT, font=('Consolas', 10))
+
         # ── Draw lines ────────────────────────────────────────────────────────
-        n = len(self._prompt)
+        n = len(self._times)
         if n < 2:
             return
 
-        offset = self._max_points - n
-
-        def to_x(i):
-            return ml + ((i + offset) / (self._max_points - 1)) * plot_w
+        def to_x(t):
+            return ml + ((t - t_min) / self._time_window_s) * plot_w
 
         def make_to_y(y0, y1, max_val):
             def to_y(v):
@@ -292,30 +311,22 @@ class MetricsChart(ttk.Frame):
             return to_y
 
         def draw_line(data, color, to_y, width=1.5, smooth=True):
-            # Break the line when there's a gap in samples (no time-counter
-            # advance). A gap of more than 1 slot means the time counter
-            # didn't change between polls — the line should not connect
-            # those points.
             coords = []
-            prev_i = None
-            for i, v in enumerate(data):
-                if v is None:
-                    prev_i = None
+            for t, v in zip(self._times, data):
+                if t < t_min or t > now:
                     continue
-                if prev_i is not None and i - prev_i > 1:
-                    # Gap detected — emit current line, then start a new one
+                if v is None:
                     if len(coords) >= 4:
                         c.create_line(*coords, fill=color, width=width, smooth=smooth)
                     coords = []
-                coords.extend([to_x(i), to_y(v)])
-                prev_i = i
+                    continue
+                coords.extend([to_x(t), to_y(v)])
             if len(coords) >= 4:
                 c.create_line(*coords, fill=color, width=width, smooth=smooth)
 
         if 'pp' in rects:
             r = rects['pp']
-            all_pp = ([v for v in self._prompt if v is not None]
-                      + [v for v in self._raw_prompt if v is not None])
+            all_pp = visible_values(self._prompt) + visible_values(self._raw_prompt)
             max_pp = self._nice_ceil(max(all_pp)) if all_pp else 10.0
             to_y_pp = make_to_y(r[1], r[3], max_pp)
             draw_line(self._raw_prompt, self.C_PROMPT_RAW, to_y_pp, width=0.7, smooth=False)
@@ -323,11 +334,9 @@ class MetricsChart(ttk.Frame):
 
         if 'tg' in rects:
             r = rects['tg']
-            all_vals = ([v for v in self._gen + self._draft_gen + self._draft_acc
-                         if v is not None]
-                        + [v for v in self._raw_gen if v is not None]
-                        + [v for v in self._raw_draft_gen if v is not None]
-                        + [v for v in self._raw_draft_acc if v is not None])
+            all_vals = (visible_values(self._gen) + visible_values(self._draft_gen)
+                        + visible_values(self._draft_acc) + visible_values(self._raw_gen)
+                        + visible_values(self._raw_draft_gen) + visible_values(self._raw_draft_acc))
             max_tg = self._nice_ceil(max(all_vals)) if all_vals else 10.0
             to_y_tg = make_to_y(r[1], r[3], max_tg)
             draw_line(self._raw_gen, self.C_GEN_RAW, to_y_tg, width=0.7, smooth=False)
@@ -382,34 +391,44 @@ class MetricsChart(ttk.Frame):
         if not panels:
             return
         mx = self._hover_x
+        now = time.monotonic()
+        t_min = now - self._time_window_s
 
         # Only show when cursor is inside the plot area
         if mx < ml or mx > W - mr:
             return
 
-        n = len(self._prompt)
+        n = len(self._times)
         if n < 2:
             return
 
-        # Map canvas-x to a (possibly fractional) data index
-        frac  = (mx - ml) / plot_w
-        idx_f = frac * (self._max_points - 1) - (self._max_points - n)
-        if idx_f < 0 or idx_f > n - 1:
+        t_hover = t_min + ((mx - ml) / plot_w) * self._time_window_s
+        if t_hover < self._times[0] or t_hover > self._times[-1]:
             return
 
-        i0 = int(idx_f)
-        i1 = min(i0 + 1, n - 1)
-        t  = idx_f - i0
+        i1 = None
+        for i, sample_t in enumerate(self._times):
+            if sample_t >= t_hover:
+                i1 = i
+                break
+        if i1 is None or i1 == 0:
+            return
+        i0 = i1 - 1
+        t0 = self._times[i0]
+        t1 = self._times[i1]
+        if t1 <= t0:
+            return
+        frac = (t_hover - t0) / (t1 - t0)
 
         def interp(data):
             v0, v1 = data[i0], data[i1]
-            if v0 is None and v1 is None:
+            if v0 is None or v1 is None:
                 return None
-            if v0 is None:
-                return v1
-            if v1 is None:
-                return v0
-            return v0 * (1 - t) + v1 * t
+            return v0 * (1 - frac) + v1 * frac
+
+        def visible_values(data):
+            return [v for sample_t, v in zip(self._times, data)
+                    if sample_t >= t_min and sample_t <= now and v is not None]
 
         # Vertical rule spanning top of first panel to bottom of last panel
         panel_list = list(panels.values())
@@ -435,7 +454,8 @@ class MetricsChart(ttk.Frame):
 
         for key, (x0, py0, x1, py1) in panels.items():
             if key == 'pp':
-                max_pp = self._nice_ceil(max(v for v in self._prompt if v is not None)) if any(v is not None for v in self._prompt) else 10.0
+                pp_vals = visible_values(self._prompt)
+                max_pp = self._nice_ceil(max(pp_vals)) if pp_vals else 10.0
                 val = interp(self._prompt)
                 if val is not None:
                     draw_dot_label(val, self.C_PROMPT,
@@ -443,7 +463,7 @@ class MetricsChart(ttk.Frame):
                                    x0, py0, x1, py1, max_pp)
 
             elif key == 'tg':
-                all_vals = [v for v in self._gen + self._draft_gen + self._draft_acc if v is not None]
+                all_vals = visible_values(self._gen) + visible_values(self._draft_gen) + visible_values(self._draft_acc)
                 max_tg = self._nice_ceil(max(all_vals)) if all_vals else 10.0
                 fmt_dt = lambda v: f'{v:.1f}' if v < 1000 else f'{v/1000:.2f}k'
                 val_gen = interp(self._gen)
@@ -517,7 +537,7 @@ class MonitorTab(ttk.Frame):
             'ta': 0.0,
             'da': 100.0,
         }
-        # Accumulated rate tracking (counter / time counters).
+        # Accumulated rate tracking (counter and time counters).
         self._prev_pp_total = 0.0
         self._prev_pp_time = 0.0
         self._prev_tg_total = 0.0
@@ -529,6 +549,7 @@ class MonitorTab(ttk.Frame):
         self._prev_tdr_total = 0.0
         self._prev_tdr_time = 0.0
         self._using_event_metrics = False
+        self._gauge_last = {}
         # Raw sample buffers: (monotonic_time, value) tuples.
         # maxlen covers ~10 min at fastest realistic poll rate (1 Hz) — plenty.
         _MAX_RAW = 600
@@ -716,7 +737,12 @@ class MonitorTab(ttk.Frame):
             self._graph_tick_id = None
 
     def _graph_tick(self):
-        """Push one smoothed point to the chart at a fixed 4 Hz regardless of fetch state."""
+        """Redraw the chart so timestamped samples move with real time."""
+        self._chart._redraw()
+        self._graph_tick_id = self.after(250, self._graph_tick)
+
+    def _push_graph_point(self, raw):
+        """Push one aligned graph point for a single /metrics probe."""
         now = time.monotonic()
         cutoff_pp = now - self._graph_smooth_ms_pp / 1000.0
         cutoff_tg = now - self._graph_smooth_ms_tg / 1000.0
@@ -734,44 +760,47 @@ class MonitorTab(ttk.Frame):
             weights = [i + 1 for i in range(n)]
             return sum(v * w for v, w in zip(window, weights)) / sum(weights)
 
-        def _raw(buf):
-            return buf[-1][1] if buf else None
+        fresh = {key: value is not None for key, value in raw.items()}
 
-        pp_raw = _raw(self._raw_prompt)
-        pp     = _wma(self._raw_prompt, cutoff_pp)
-        tg_raw = _raw(self._raw_gen)
-        tg     = _wma(self._raw_gen,    cutoff_tg)
-        da_raw = _raw(self._raw_draft)
-        da     = _wma(self._raw_draft,  cutoff_tg)
-        td_raw = _raw(self._raw_draft_gen)
-        td     = _wma(self._raw_draft_gen, cutoff_tg)
-        ta_raw = _raw(self._raw_draft_acc)
-        ta     = _wma(self._raw_draft_acc, cutoff_tg)
+        pp_raw = raw.get('pp')
+        pp     = _wma(self._raw_prompt, cutoff_pp) if fresh['pp'] else None
+        tg_raw = raw.get('tg')
+        tg     = _wma(self._raw_gen, cutoff_tg) if fresh['tg'] else None
+        da_raw = raw.get('da')
+        da     = _wma(self._raw_draft, cutoff_tg) if fresh['da'] else None
+        td_raw = raw.get('td')
+        td     = _wma(self._raw_draft_gen, cutoff_tg) if fresh['td'] else None
+        ta_raw = raw.get('ta')
+        ta     = _wma(self._raw_draft_acc, cutoff_tg) if fresh['ta'] else None
 
-        self._chart.add_point(pp_raw, pp, tg_raw, tg, da_raw, da, td_raw, td, ta_raw, ta)
-        self._update_gauges(pp, tg, td, ta, da)
-        self._graph_tick_id = self.after(250, self._graph_tick)
+        self._chart.add_point(pp_raw, pp, tg_raw, tg, da_raw, da, td_raw, td, ta_raw, ta, sample_t=now)
+        self._update_gauges({'pp': pp, 'tg': tg, 'td': td, 'ta': ta, 'da': da}, fresh)
 
-    def _update_gauges(self, pp, tg, td, ta, da):
+    def _update_gauges(self, values, fresh):
         """Update gauge labels and progress bars from smoothed graph values."""
-        for key, val, fmt in [
-            ('pp', pp, 'PP:  {:.1f} tok/s'),
-            ('tg', tg, 'TG:  {:.1f} tok/s'),
-            ('td', td, 'TD:  {:.1f} tok/s'),
-            ('ta', ta, 'TA:  {:.1f} tok/s'),
-            ('da', da, 'DA:  {:.1f}%'),
+        for key, fmt, bright, dim in [
+            ('pp', 'PP:  {:.1f} tok/s', MetricsChart.C_PROMPT, MetricsChart.C_PROMPT_RAW),
+            ('tg', 'TG:  {:.1f} tok/s', MetricsChart.C_GEN, MetricsChart.C_GEN_RAW),
+            ('td', 'TD:  {:.1f} tok/s', MetricsChart.C_DRAFT_GEN, MetricsChart.C_DRAFT_GEN_RAW),
+            ('ta', 'TA:  {:.1f} tok/s', MetricsChart.C_DRAFT_ACC, MetricsChart.C_DRAFT_ACC_RAW),
+            ('da', 'DA:  {:.1f}%', MetricsChart.C_DRAFT, MetricsChart.C_DRAFT_RAW),
         ]:
             g = self._gauges.get(key)
             if not g:
                 continue
 
+            val = values.get(key)
             if val is None:
-                g['lbl'].config(text='N/A')
-                g['bar']['value'] = 0
-                continue
+                val = self._gauge_last.get(key)
+                if val is None:
+                    g['lbl'].config(text='N/A')
+                    g['bar']['value'] = 0
+                    continue
+            else:
+                self._gauge_last[key] = val
 
             v = max(val, 0.0)
-            g['lbl'].config(text=fmt.format(v))
+            g['lbl'].config(text=fmt.format(v), foreground=bright if fresh.get(key) else dim)
 
             # Adaptive max — expand when value exceeds 80 % of current ceiling
             max_seen = self._gauge_max_seen.get(key, 100.0)
@@ -863,7 +892,7 @@ class MonitorTab(ttk.Frame):
         tg_total = parsed.get('tokens_predicted_total')
         tg_time  = parsed.get('tokens_predicted_seconds_total')
         td_total = parsed.get('n_tokens_draft')
-        td_time  = parsed.get('tokens_draft_seconds_total')
+        td_time  = tg_time
         tda_total = parsed.get('n_tokens_draft_accepted', 0)
         tda_time  = td_time
         tdr_total = parsed.get('n_tokens_draft_rejected', 0)
@@ -883,21 +912,30 @@ class MonitorTab(ttk.Frame):
                 self._prev_tdr_total = 0.0
                 self._prev_tdr_time = 0.0
 
-            # Compute rates as counter / accumulated time.
+            # Compute rates as counter deltas over time-counter deltas.
             # Only emit a sample when the time counter has increased since
-            # the last poll — otherwise no new work was done and the same
-            # rate would be re-emitted, polluting the WMA with stale data.
+            # the last poll; unchanged counters become gaps in the chart.
             pp_changed  = pp_time  is not None and pp_time  > self._prev_pp_time
             tg_changed  = tg_time  is not None and tg_time  > self._prev_tg_time
             td_changed  = td_time  is not None and td_time  > self._prev_td_time
             tda_changed = tda_time is not None and tda_time > self._prev_tda_time
             tdr_changed = tdr_time is not None and tdr_time > self._prev_tdr_time
 
-            pp_rate  = pp_total / pp_time  if pp_time  is not None and pp_time  > 0 else None
-            tg_rate  = tg_total / tg_time  if tg_time  is not None and tg_time  > 0 else None
-            td_rate  = td_total / td_time  if td_time  is not None and td_time  > 0 else None
-            tda_rate = tda_total / tda_time if tda_time is not None and tda_time > 0 else None
-            tdr_rate = tdr_total / tdr_time if tdr_time is not None and tdr_time > 0 else None
+            def _rate(total, prev_total, time_total, prev_time, changed):
+                if not changed:
+                    return None
+                dt = time_total - prev_time
+                if dt <= 0:
+                    return None
+                return max(0.0, total - prev_total) / dt
+
+            pp_rate  = _rate(pp_total, self._prev_pp_total, pp_time, self._prev_pp_time, pp_changed)
+            tg_rate  = _rate(tg_total, self._prev_tg_total, tg_time, self._prev_tg_time, tg_changed)
+            td_rate  = _rate(td_total, self._prev_td_total, td_time, self._prev_td_time, td_changed)
+            tda_rate = _rate(tda_total, self._prev_tda_total, tda_time, self._prev_tda_time, tda_changed)
+            tdr_rate = _rate(tdr_total, self._prev_tdr_total, tdr_time, self._prev_tdr_time, tdr_changed)
+
+            raw = {'pp': pp_rate, 'tg': tg_rate, 'td': td_rate, 'ta': tda_rate, 'da': None}
 
             if pp_rate is not None and pp_changed:
                 self._raw_prompt.append((now, pp_rate))
@@ -913,18 +951,26 @@ class MonitorTab(ttk.Frame):
                 total_rej = tda_rate + tdr_rate
                 if total_rej > 0:
                     pct = min(100.0, tda_rate / total_rej * 100)
-                    self._raw_draft.append((now, max(0.0, pct)))
+                    raw['da'] = max(0.0, pct)
+                    self._raw_draft.append((now, raw['da']))
 
-            self._prev_pp_total = pp_total
-            self._prev_pp_time = pp_time
-            self._prev_tg_total = tg_total
-            self._prev_tg_time = tg_time
-            self._prev_td_total = td_total
-            self._prev_td_time = td_time
-            self._prev_tda_total = tda_total
-            self._prev_tda_time = tda_time
-            self._prev_tdr_total = tdr_total
-            self._prev_tdr_time = tdr_time
+            self._push_graph_point(raw)
+
+            if pp_rate is not None:
+                self._prev_pp_total = pp_total
+                self._prev_pp_time = pp_time
+            if tg_rate is not None:
+                self._prev_tg_total = tg_total
+                self._prev_tg_time = tg_time
+            if td_rate is not None:
+                self._prev_td_total = td_total
+                self._prev_td_time = td_time
+            if tda_rate is not None:
+                self._prev_tda_total = tda_total
+                self._prev_tda_time = tda_time
+            if tdr_rate is not None:
+                self._prev_tdr_total = tdr_total
+                self._prev_tdr_time = tdr_time
             self._using_event_metrics = True
 
         n_ctx_size = int(parsed.get('n_ctx_size', 0))

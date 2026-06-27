@@ -1427,11 +1427,7 @@ private:
         llama_set_pp_eval_seq_callback(ctx_tgt,
             [](llama_seq_id seq_id, uint32_t /* n_tokens */, void * ud) {
                 auto * m = static_cast<server_metrics *>(ud);
-                const int64_t t_start = m->slot((int) seq_id).t_start_pp.load(std::memory_order_relaxed);
-                if (t_start > 0) {
-                    const uint64_t elapsed_ms = (uint64_t) ((ggml_time_us() - t_start) / 1e3);
-                    m->slot((int) seq_id).t_pp_ms.store(elapsed_ms, std::memory_order_relaxed);
-                }
+                m->on_pp_progress_slot((int) seq_id);
             }, &metrics);
 
         if (params_base.cache_idle_slots) {
@@ -2926,8 +2922,7 @@ private:
             const int64_t t_ms = (ggml_time_us() - t_start) / 1000;
 
             for (auto & slot : drafting) {
-                slot.t_draft = t_ms;
-                metrics.on_draft_time(slot.id, t_ms);
+                slot->t_draft += t_ms;
             }
         }
 
@@ -2937,7 +2932,7 @@ private:
             auto & ckpt  = slot.spec_ckpt;
 
             slot.n_draft_total += draft.size();
-            metrics.on_draft_tokens(slot.id, draft.size());
+            metrics.on_draft_tokens(slot.id, draft.size(), slot.t_draft);
 
             // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
@@ -3735,10 +3730,12 @@ private:
                 slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
                 metrics.on_pp_eval(slot.id,
                                    slot.t_prompt_processing,
-                                   (uint64_t) slot.prompt.n_tokens());
+                                   (uint64_t) slot.task->n_tokens(),
+                                   (uint64_t) (slot.task->n_tokens() - slot.n_prompt_tokens_cache));
             }
 
             slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
+            metrics.on_tg_token(slot.id, slot.t_token_generation);
 
             completion_token_output result;
             result.tok          = id;
@@ -3834,7 +3831,7 @@ private:
                         SLT_INF(slot, "accepted %2u/%2zu draft tokens\n", n_accepted, n_draft);
                     }
                     common_speculative_accept(spec.get(), slot.id, n_accepted);
-                    metrics.on_draft_accepted(slot.id, n_accepted);
+                    metrics.on_draft_accepted(slot.id, n_accepted, slot.t_draft);
                 }
             }
 
@@ -3877,8 +3874,6 @@ private:
                 // TODO: set result.probs
 
                 slot.n_decoded += 1;
-                metrics.on_tg_token(slot.id);
-                slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
 
                 if (slot.n_decoded == 1) {
                     slot.t_start_generation = t_now;
@@ -3887,8 +3882,12 @@ private:
                     slot.t_prompt_processing = (slot.t_start_generation - slot.t_start_process_prompt) / 1e3;
                     metrics.on_pp_eval(slot.id,
                                        slot.t_prompt_processing,
-                                       (uint64_t) slot.prompt.n_tokens());
+                                       (uint64_t) slot.task->n_tokens(),
+                                       (uint64_t) (slot.task->n_tokens() - slot.n_prompt_tokens_cache));
                 }
+
+                slot.t_token_generation = std::max<int64_t>(1, t_now - slot.t_start_generation) / 1e3;
+                metrics.on_tg_token(slot.id, slot.t_token_generation);
 
                 if (!process_token(result, slot)) {
                     slot.print_timings();

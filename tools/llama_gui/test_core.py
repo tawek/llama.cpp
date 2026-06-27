@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import unittest
 from unittest.mock import MagicMock, patch
 import json
+import time
 
 from log_parser import (
     LogMetrics,
@@ -626,7 +627,7 @@ class CollapsiblePaneAPITest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class MonitorTabRateComputationTest(unittest.TestCase):
-    """Tests for _apply_metrics counter/time rate computation."""
+    """Tests for _apply_metrics delta counter/time rate computation."""
 
     def _fake_monitor(self):
         m = MagicMock()
@@ -666,9 +667,9 @@ class MonitorTabRateComputationTest(unittest.TestCase):
         self.assertEqual(len(m._raw_gen), 1)
         self.assertAlmostEqual(m._raw_gen[0][1], 13.333, places=2)  # 200 / 15
         self.assertEqual(len(m._raw_draft_gen), 1)
-        self.assertAlmostEqual(m._raw_draft_gen[0][1], 10.0)  # 50 / 5
+        self.assertAlmostEqual(m._raw_draft_gen[0][1], 3.333, places=2)  # 50 / 15
         self.assertEqual(len(m._raw_draft_acc), 1)
-        self.assertAlmostEqual(m._raw_draft_acc[0][1], 8.0)  # 40 / 5
+        self.assertAlmostEqual(m._raw_draft_acc[0][1], 2.667, places=2)  # 40 / 15
 
     def test_rate_computation_with_none_time(self):
         m = self._fake_monitor()
@@ -811,12 +812,12 @@ class MonitorTabRateComputationTest(unittest.TestCase):
         self.assertEqual(len(m._raw_prompt), 1)
 
         # Time increased, counters increased
-        parsed['prompt_tokens_total'] = 200.0
+        parsed['prompt_tokens_total'] = 250.0
         parsed['prompt_seconds_total'] = 20.0
         MonitorTab._apply_metrics(m, parsed)
         self.assertEqual(len(m._raw_prompt), 2)
-        # Rate still 200/20 = 10.0
-        self.assertAlmostEqual(m._raw_prompt[1][1], 10.0)
+        # Rate is delta_tokens / delta_time = (250 - 100) / (20 - 10)
+        self.assertAlmostEqual(m._raw_prompt[1][1], 15.0)
 
     def test_unchanged_time_with_counter_increase_skips_sample(self):
         """If time unchanged but counter increased (server bug), skip sample."""
@@ -838,6 +839,14 @@ class MonitorTabRateComputationTest(unittest.TestCase):
         parsed['prompt_tokens_total'] = 200.0
         MonitorTab._apply_metrics(m, parsed)
         self.assertEqual(len(m._raw_prompt), 1)
+
+        # When time finally advances, include tokens accumulated while time was
+        # frozen: (300 - 100) / (20 - 10) = 20 tok/s.
+        parsed['prompt_tokens_total'] = 300.0
+        parsed['prompt_seconds_total'] = 20.0
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 2)
+        self.assertAlmostEqual(m._raw_prompt[1][1], 20.0)
 
 
 class MonitorTabWMATest(unittest.TestCase):
@@ -935,12 +944,15 @@ class MetricsChartAddPointTest(unittest.TestCase):
         chart._raw_draft = []
         chart._raw_draft_gen = []
         chart._raw_draft_acc = []
+        chart._times = []
         chart._prompt = []
         chart._gen = []
         chart._draft = []
         chart._draft_gen = []
         chart._draft_acc = []
+        chart._times = []
         chart._max_points = 100
+        chart._time_window_s = 120
         chart._smooth_ms = 60000
         chart._smooth_ms_draft = 60000
         chart._smooth_ms_draft_acc = 60000
@@ -984,6 +996,7 @@ class PanelVisibilityTest(unittest.TestCase):
         chart.GAP = 18
         chart._PANEL_ORDER = ('pp', 'tg', 'draft_pct')
         chart._PANEL_WEIGHT = {'pp': 2, 'tg': 2, 'draft_pct': 1}
+        chart._time_window_s = 120
         return chart
 
     def test_panel_hidden_when_all_samples_none(self):
@@ -992,6 +1005,7 @@ class PanelVisibilityTest(unittest.TestCase):
         chart._prompt = [None, None, None]
         chart._gen = [None, None]
         chart._draft = [None]
+        chart._times = [time.monotonic(), time.monotonic(), time.monotonic()]
         rects = MetricsChart._compute_panel_rects(chart, 100, 200)
         self.assertNotIn('pp', rects)
         self.assertNotIn('tg', rects)
@@ -1002,10 +1016,12 @@ class PanelVisibilityTest(unittest.TestCase):
         chart._prompt = [None, 5.0, None]
         chart._gen = [None]
         chart._draft = [None]
+        now = time.monotonic()
+        chart._times = [now, now, now]
         rects = MetricsChart._compute_panel_rects(chart, 100, 200)
         self.assertIn('pp', rects)
-        self.assertNotIn('tg', rects)
-        self.assertNotIn('draft_pct', rects)
+        self.assertIn('tg', rects)
+        self.assertIn('draft_pct', rects)
 
 
 class LineGapBreakingTest(unittest.TestCase):

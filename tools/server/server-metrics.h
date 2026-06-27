@@ -67,8 +67,8 @@ struct server_metrics {
 
     // Prompt processing.
     // n_pp is updated in real-time via the llama_pp_eval_callback (fires once
-    // per ubatch during llama_decode).  t_pp_ms is updated at end-of-PP for
-    // each slot (when the first generation token appears).
+    // per ubatch during llama_decode). t_pp_ms is updated from the per-sequence
+    // callback during PP and finalized when the first generation token appears.
     std::atomic<uint64_t> n_pp             {0};
     std::atomic<uint64_t> t_pp_ms          {0};
 
@@ -114,21 +114,25 @@ struct server_metrics {
     // Incremental per-slot prompt tokens processed during PP (real-time tracking).
     void on_pp_tokens_slot(int slot_id, uint32_t n);
 
+    // Incremental per-slot prompt time during PP (real-time tracking).
+    void on_pp_progress_slot(int slot_id);
+
     // Called when the first generation token appears for a slot (prompt eval done).
     //   t_ms         = slot.t_prompt_processing
-    //   prompt_len   = slot.prompt.n_tokens()
-    void on_pp_eval(int slot_id, double t_ms, uint64_t prompt_len);
+    //   prompt_len   = slot.prompt.n_tokens() (total prompt length including cache hits)
+    //   n_new_tokens = slot.task->n_tokens() - slot.n_prompt_tokens_cache
+    void on_pp_eval(int slot_id, double t_ms, uint64_t prompt_len, uint64_t n_new_tokens);
 
     // Called each time a generation token is produced.
-    void on_tg_token(int slot_id);
+    void on_tg_token(int slot_id, double t_gen_ms);
 
     // Called when a slot finishes generating (stop condition met).
     //   t_gen_ms = slot.t_token_generation  (total elapsed generation time)
     void on_tg_done(int slot_id, double t_gen_ms);
 
     // Speculative decoding counters.
-    void on_draft_tokens  (int slot_id, size_t n); // proposed
-    void on_draft_accepted(int slot_id, size_t n); // accepted
+    void on_draft_tokens  (int slot_id, size_t n, double t_ms); // proposed
+    void on_draft_accepted(int slot_id, size_t n, double t_ms); // accepted
     void on_draft_time    (int slot_id, double t_ms); // draft inference time
 
     // Called once per llama_decode() call.

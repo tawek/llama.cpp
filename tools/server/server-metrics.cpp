@@ -70,41 +70,74 @@ void server_metrics::on_pp_tokens_slot(int slot_id, uint32_t n) {
     slot(slot_id).n_pp.fetch_add(n, std::memory_order_relaxed);
 }
 
-void server_metrics::on_pp_eval(int slot_id, double t_ms, uint64_t prompt_len) {
-    t_pp_ms.fetch_add((uint64_t) t_ms, std::memory_order_relaxed);
+void server_metrics::on_pp_progress_slot(int slot_id) {
+    auto & s = slot(slot_id);
+    const int64_t t_start = s.t_start_pp.load(std::memory_order_relaxed);
+    if (t_start <= 0) {
+        return;
+    }
+
+    const uint64_t elapsed_ms = (uint64_t) ((ggml_time_us() - t_start) / 1e3);
+    const uint64_t prev_ms = s.t_pp_ms.exchange(elapsed_ms, std::memory_order_relaxed);
+    if (elapsed_ms > prev_ms) {
+        t_pp_ms.fetch_add(elapsed_ms - prev_ms, std::memory_order_relaxed);
+    }
+}
+
+void server_metrics::on_pp_eval(int slot_id, double t_ms, uint64_t prompt_len, uint64_t n_new_tokens) {
+    const uint64_t t_ms_u = (uint64_t) t_ms;
     bump_tokens_max(prompt_len);
 
     auto & s = slot(slot_id);
-    // n_pp = total prompt length (includes cache hits), so it matches
-    // n_prompt_length when prompt eval completes.
-    s.n_pp           .store(prompt_len, std::memory_order_relaxed);
+    const uint64_t prev_ms = s.t_pp_ms.exchange(t_ms_u, std::memory_order_relaxed);
+    if (t_ms_u > prev_ms) {
+        t_pp_ms.fetch_add(t_ms_u - prev_ms, std::memory_order_relaxed);
+    }
+
+    s.n_pp           .store(n_new_tokens, std::memory_order_relaxed);
     s.n_prompt_length.store(prompt_len, std::memory_order_relaxed);
-    s.t_pp_ms        .store((uint64_t) t_ms,  std::memory_order_relaxed);
 }
 
-void server_metrics::on_tg_token(int slot_id) {
+void server_metrics::on_tg_token(int slot_id, double t_gen_ms) {
     n_tg.fetch_add(1, std::memory_order_relaxed);
-    slot(slot_id).n_tg.fetch_add(1, std::memory_order_relaxed);
+    auto & s = slot(slot_id);
+    s.n_tg.fetch_add(1, std::memory_order_relaxed);
+
+    const uint64_t t_ms_u = (uint64_t) t_gen_ms;
+    const uint64_t prev_ms = s.t_tg_ms.exchange(t_ms_u, std::memory_order_relaxed);
+    if (t_ms_u > prev_ms) {
+        t_tg_ms.fetch_add(t_ms_u - prev_ms, std::memory_order_relaxed);
+    }
 }
 
 void server_metrics::on_tg_done(int slot_id, double t_gen_ms) {
-    t_tg_ms.fetch_add((uint64_t) t_gen_ms, std::memory_order_relaxed);
-    slot(slot_id).t_tg_ms.store((uint64_t) t_gen_ms, std::memory_order_relaxed);
+    auto & s = slot(slot_id);
+    const uint64_t t_ms_u = (uint64_t) t_gen_ms;
+    const uint64_t prev_ms = s.t_tg_ms.exchange(t_ms_u, std::memory_order_relaxed);
+    if (t_ms_u > prev_ms) {
+        t_tg_ms.fetch_add(t_ms_u - prev_ms, std::memory_order_relaxed);
+    }
 }
 
-void server_metrics::on_draft_tokens(int slot_id, size_t n) {
+void server_metrics::on_draft_tokens(int slot_id, size_t n, double t_ms) {
     n_draft.fetch_add(n, std::memory_order_relaxed);
     slot(slot_id).n_draft.fetch_add(n, std::memory_order_relaxed);
+    on_draft_time(slot_id, t_ms);
 }
 
-void server_metrics::on_draft_accepted(int slot_id, size_t n) {
+void server_metrics::on_draft_accepted(int slot_id, size_t n, double t_ms) {
     n_draft_accepted.fetch_add(n, std::memory_order_relaxed);
     slot(slot_id).n_draft_accepted.fetch_add(n, std::memory_order_relaxed);
+    on_draft_time(slot_id, t_ms);
 }
 
 void server_metrics::on_draft_time(int slot_id, double t_ms) {
-    t_draft_ms.fetch_add((uint64_t) t_ms, std::memory_order_relaxed);
-    slot(slot_id).t_draft_ms.store((uint64_t) t_ms, std::memory_order_relaxed);
+    auto & s = slot(slot_id);
+    const uint64_t t_ms_u = (uint64_t) t_ms;
+    const uint64_t prev_ms = s.t_draft_ms.exchange(t_ms_u, std::memory_order_relaxed);
+    if (t_ms_u > prev_ms) {
+        t_draft_ms.fetch_add(t_ms_u - prev_ms, std::memory_order_relaxed);
+    }
 }
 
 void server_metrics::on_decoded(uint64_t n_busy, uint64_t tokens_max) {
