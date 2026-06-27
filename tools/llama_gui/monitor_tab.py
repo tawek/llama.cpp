@@ -874,27 +874,36 @@ class MonitorTab(ttk.Frame):
                 self._prev_tdr_time = 0.0
 
             # Compute rates as counter / accumulated time.
-            # Skip samples when time hasn't changed (no new data to plot).
+            # Only emit a sample when the time counter has increased since
+            # the last poll — otherwise no new work was done and the same
+            # rate would be re-emitted, polluting the WMA with stale data.
+            pp_changed  = pp_time  is not None and pp_time  > self._prev_pp_time
+            tg_changed  = tg_time  is not None and tg_time  > self._prev_tg_time
+            td_changed  = td_time  is not None and td_time  > self._prev_td_time
+            tda_changed = tda_time is not None and tda_time > self._prev_tda_time
+            tdr_changed = tdr_time is not None and tdr_time > self._prev_tdr_time
+
             pp_rate  = pp_total / pp_time  if pp_time  is not None and pp_time  > 0 else None
             tg_rate  = tg_total / tg_time  if tg_time  is not None and tg_time  > 0 else None
             td_rate  = td_total / td_time  if td_time  is not None and td_time  > 0 else None
             tda_rate = tda_total / tda_time if tda_time is not None and tda_time > 0 else None
             tdr_rate = tdr_total / tdr_time if tdr_time is not None and tdr_time > 0 else None
 
-            if pp_rate is not None:
+            if pp_rate is not None and pp_changed:
                 self._raw_prompt.append((now, pp_rate))
-            if tg_rate is not None:
+            if tg_rate is not None and tg_changed:
                 self._raw_gen.append((now, tg_rate))
-            if td_rate is not None:
+            if td_rate is not None and td_changed:
                 self._raw_draft_gen.append((now, td_rate))
-            if tda_rate is not None:
+            if tda_rate is not None and tda_changed:
                 self._raw_draft_acc.append((now, tda_rate))
 
-            # Draft acceptance % — computed from counter ratios (time cancels out).
-            total_rej = tda_rate + tdr_rate if tda_rate is not None and tdr_rate is not None else None
-            if total_rej is not None and total_rej > 0:
-                pct = min(100.0, tda_rate / total_rej * 100)
-                self._raw_draft.append((now, max(0.0, pct)))
+            # Draft acceptance % — only emit when draft time has advanced.
+            if tda_rate is not None and tdr_rate is not None and tda_changed:
+                total_rej = tda_rate + tdr_rate
+                if total_rej > 0:
+                    pct = min(100.0, tda_rate / total_rej * 100)
+                    self._raw_draft.append((now, max(0.0, pct)))
 
             self._prev_pp_total = pp_total
             self._prev_pp_time = pp_time
