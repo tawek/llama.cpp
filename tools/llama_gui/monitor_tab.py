@@ -177,11 +177,13 @@ class MetricsChart(ttk.Frame):
         for k in self._PANEL_ORDER:
             if not self._graphs_visible.get(k, True):
                 continue
-            if k == 'pp' and self._prompt:
+            if k == 'pp' and any(v is not None for v in self._prompt):
                 visible.append(k)
-            elif k == 'tg' and (self._gen or self._draft_gen or self._draft_acc):
+            elif k == 'tg' and (any(v is not None for v in self._gen) or
+                                any(v is not None for v in self._draft_gen) or
+                                any(v is not None for v in self._draft_acc)):
                 visible.append(k)
-            elif k == 'draft_pct' and self._draft:
+            elif k == 'draft_pct' and any(v is not None for v in self._draft):
                 visible.append(k)
 
         if not visible:
@@ -215,6 +217,8 @@ class MetricsChart(ttk.Frame):
 
         rects = self._compute_panel_rects(W, H)
         if not rects:
+            c.create_text(W // 2, H // 2, text='No data',
+                          fill=self.C_TEXT, font=('Consolas', 10))
             return
 
         # X-axis labels below the last visible panel
@@ -871,11 +875,11 @@ class MonitorTab(ttk.Frame):
 
             # Compute rates as counter / accumulated time.
             # Skip samples when time hasn't changed (no new data to plot).
-            pp_rate  = pp_total / pp_time  if pp_total and pp_time  is not None and pp_time  > 0 else None
-            tg_rate  = tg_total / tg_time  if tg_total and tg_time  is not None and tg_time  > 0 else None
-            td_rate  = td_total / td_time  if td_total and td_time  is not None and td_time  > 0 else None
-            tda_rate = tda_total / tda_time if tda_total and tda_time is not None and tda_time > 0 else None
-            tdr_rate = tdr_total / tdr_time if tdr_total and tdr_time is not None and tdr_time > 0 else None
+            pp_rate  = pp_total / pp_time  if pp_time  is not None and pp_time  > 0 else None
+            tg_rate  = tg_total / tg_time  if tg_time  is not None and tg_time  > 0 else None
+            td_rate  = td_total / td_time  if td_time  is not None and td_time  > 0 else None
+            tda_rate = tda_total / tda_time if tda_time is not None and tda_time > 0 else None
+            tdr_rate = tdr_total / tdr_time if tdr_time is not None and tdr_time > 0 else None
 
             if pp_rate is not None:
                 self._raw_prompt.append((now, pp_rate))

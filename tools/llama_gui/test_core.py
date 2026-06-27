@@ -891,6 +891,48 @@ class MetricsChartAddPointTest(unittest.TestCase):
         self.assertEqual(len(chart._raw_draft_gen), 1)
 
 
+class PanelVisibilityTest(unittest.TestCase):
+    """Tests for _compute_panel_rects with None samples."""
+
+    def _make_chart(self):
+        chart = MagicMock()
+        chart._prompt = []
+        chart._gen = []
+        chart._draft = []
+        chart._draft_gen = []
+        chart._draft_acc = []
+        chart._graphs_visible = {'pp': True, 'tg': True, 'draft_pct': True}
+        chart.MARGIN_L = 46
+        chart.MARGIN_R = 12
+        chart.MARGIN_T = 18
+        chart.MARGIN_B = 22
+        chart.GAP = 18
+        chart._PANEL_ORDER = ('pp', 'tg', 'draft_pct')
+        chart._PANEL_WEIGHT = {'pp': 2, 'tg': 2, 'draft_pct': 1}
+        return chart
+
+    def test_panel_hidden_when_all_samples_none(self):
+        chart = self._make_chart()
+        # _prompt has only None values — panel should be hidden
+        chart._prompt = [None, None, None]
+        chart._gen = [None, None]
+        chart._draft = [None]
+        rects = MetricsChart._compute_panel_rects(chart, 100, 200)
+        self.assertNotIn('pp', rects)
+        self.assertNotIn('tg', rects)
+        self.assertNotIn('draft_pct', rects)
+
+    def test_panel_shown_with_one_valid_sample(self):
+        chart = self._make_chart()
+        chart._prompt = [None, 5.0, None]
+        chart._gen = [None]
+        chart._draft = [None]
+        rects = MetricsChart._compute_panel_rects(chart, 100, 200)
+        self.assertIn('pp', rects)
+        self.assertNotIn('tg', rects)
+        self.assertNotIn('draft_pct', rects)
+
+
 # ---------------------------------------------------------------------------
 # Run tests
 # ---------------------------------------------------------------------------
