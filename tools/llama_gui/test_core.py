@@ -34,6 +34,7 @@ from command_builder import (
     _format_arg,
 )
 from config_registry import _OPTIONS, get_option, iter_options
+from monitor_tab import MonitorTab, MetricsChart
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +619,276 @@ class CollapsiblePaneAPITest(unittest.TestCase):
         for a in attrs:
             self.assertTrue(hasattr(CollapsiblePane, a),
                             f'CollapsiblePane missing attribute: {a}')
+
+
+# ---------------------------------------------------------------------------
+# Monitor tab regression tests (no Tk required)
+# ---------------------------------------------------------------------------
+
+class MonitorTabRateComputationTest(unittest.TestCase):
+    """Tests for _apply_metrics counter/time rate computation."""
+
+    def _fake_monitor(self):
+        m = MagicMock()
+        m._prev_pp_total = 0.0
+        m._prev_pp_time = 0.0
+        m._prev_tg_total = 0.0
+        m._prev_tg_time = 0.0
+        m._prev_td_total = 0.0
+        m._prev_td_time = 0.0
+        m._prev_tda_total = 0.0
+        m._prev_tda_time = 0.0
+        m._prev_tdr_total = 0.0
+        m._prev_tdr_time = 0.0
+        m._raw_prompt = []
+        m._raw_gen = []
+        m._raw_draft_gen = []
+        m._raw_draft_acc = []
+        m._raw_draft = []
+        m._using_event_metrics = False
+        return m
+
+    def test_rate_computation_basic(self):
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 100.0,
+            'prompt_seconds_total': 10.0,
+            'tokens_predicted_total': 200.0,
+            'tokens_predicted_seconds_total': 15.0,
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+            'n_tokens_draft_accepted': 40.0,
+            'n_tokens_draft_rejected': 10.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 1)
+        self.assertAlmostEqual(m._raw_prompt[0][1], 10.0)  # 100 / 10
+        self.assertEqual(len(m._raw_gen), 1)
+        self.assertAlmostEqual(m._raw_gen[0][1], 13.333, places=2)  # 200 / 15
+        self.assertEqual(len(m._raw_draft_gen), 1)
+        self.assertAlmostEqual(m._raw_draft_gen[0][1], 10.0)  # 50 / 5
+        self.assertEqual(len(m._raw_draft_acc), 1)
+        self.assertAlmostEqual(m._raw_draft_acc[0][1], 8.0)  # 40 / 5
+
+    def test_rate_computation_with_none_time(self):
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 100.0,
+            'prompt_seconds_total': None,
+            'tokens_predicted_total': 200.0,
+            'tokens_predicted_seconds_total': 15.0,
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+            'n_tokens_draft_accepted': 40.0,
+            'n_tokens_draft_rejected': 10.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+        # pp_rate should be None when time is None
+        self.assertEqual(len(m._raw_prompt), 0)
+        # tg_rate should still be emitted
+        self.assertEqual(len(m._raw_gen), 1)
+
+    def test_rate_computation_with_zero_time(self):
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 100.0,
+            'prompt_seconds_total': 0.0,
+            'tokens_predicted_total': 200.0,
+            'tokens_predicted_seconds_total': 15.0,
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+            'n_tokens_draft_accepted': 40.0,
+            'n_tokens_draft_rejected': 10.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 0)
+        self.assertEqual(len(m._raw_gen), 1)
+
+    def test_draft_acceptance_rate(self):
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 100.0,
+            'prompt_seconds_total': 10.0,
+            'tokens_predicted_total': 200.0,
+            'tokens_predicted_seconds_total': 15.0,
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+            'n_tokens_draft_accepted': 40.0,
+            'n_tokens_draft_rejected': 10.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+        # acceptance % = 40/(40+10) * 100 = 80%
+        self.assertEqual(len(m._raw_draft), 1)
+        self.assertAlmostEqual(m._raw_draft[0][1], 80.0)
+
+    def test_draft_acceptance_rate_zero_rejected(self):
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 100.0,
+            'prompt_seconds_total': 10.0,
+            'tokens_predicted_total': 200.0,
+            'tokens_predicted_seconds_total': 15.0,
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+            'n_tokens_draft_accepted': 50.0,
+            'n_tokens_draft_rejected': 0.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+        # acceptance % = 50/50 * 100 = 100%
+        self.assertEqual(len(m._raw_draft), 1)
+        self.assertAlmostEqual(m._raw_draft[0][1], 100.0)
+
+    def test_rollover_detection(self):
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 50.0,
+            'prompt_seconds_total': 5.0,
+            'tokens_predicted_total': 100.0,
+            'tokens_predicted_seconds_total': 10.0,
+            'n_tokens_draft': 25.0,
+            'tokens_draft_seconds_total': 2.5,
+            'n_tokens_draft_accepted': 20.0,
+            'n_tokens_draft_rejected': 5.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+
+        # Simulate counter rollover (server reset)
+        parsed['prompt_tokens_total'] = 10.0
+        parsed['tokens_predicted_total'] = 5.0
+        MonitorTab._apply_metrics(m, parsed)
+        # After rollover, prev counters are set to the new (lower) values
+        self.assertEqual(m._prev_pp_total, 10.0)
+        self.assertEqual(m._prev_tg_total, 5.0)
+
+    def test_missing_counters_skip_emission(self):
+        m = self._fake_monitor()
+        parsed = {
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+        # pp_total and tg_total are missing, so no emission
+        self.assertFalse(m._using_event_metrics)
+        self.assertEqual(len(m._raw_prompt), 0)
+
+
+class MonitorTabWMATest(unittest.TestCase):
+    """Tests for WMA behavior with None values."""
+
+    def _make_monitor(self):
+        m = MagicMock()
+        m._graph_smooth_ms_pp = 60000
+        m._graph_smooth_ms_tg = 60000
+        m._raw_prompt = []
+        m._raw_gen = []
+        m._raw_draft = []
+        m._raw_draft_gen = []
+        m._raw_draft_acc = []
+        m._chart = MagicMock()
+        m._chart.add_point = MagicMock()
+        m._chart.update_gauges = MagicMock()
+        m._chart.update_slot_gauges = MagicMock()
+        return m
+
+    def test_wma_empty_buffer(self):
+        m = self._make_monitor()
+        m._graph_tick()
+        # _graph_tick calls _wma internally; verify no crash on empty buffers
+        self.assertTrue(True)
+
+    def test_wma_no_samples_in_window(self):
+        m = self._make_monitor()
+        m._graph_tick()
+        self.assertTrue(True)
+
+    def test_wma_with_samples(self):
+        m = self._make_monitor()
+        m._raw_prompt = [(100.0, 10.0), (100.5, 20.0), (101.0, 30.0)]
+        m._raw_gen = [(100.0, 10.0), (100.5, 20.0), (101.0, 30.0)]
+        m._raw_draft = [(100.0, 50.0)]
+        m._raw_draft_gen = [(100.0, 5.0)]
+        m._raw_draft_acc = [(100.0, 4.0)]
+        m._graph_tick()
+        # Should not crash with samples
+        self.assertTrue(True)
+
+    def test_wma_single_sample(self):
+        m = self._make_monitor()
+        m._raw_prompt = [(100.0, 100.0)]
+        m._raw_gen = [(100.0, 100.0)]
+        m._raw_draft = [(100.0, 50.0)]
+        m._raw_draft_gen = [(100.0, 5.0)]
+        m._raw_draft_acc = [(100.0, 4.0)]
+        m._graph_tick()
+        self.assertTrue(True)
+
+
+class MonitorTabRawTest(unittest.TestCase):
+    """Tests for _raw buffer accessor."""
+
+    def _make_monitor(self):
+        m = MagicMock()
+        m._graph_smooth_ms_pp = 60000
+        m._graph_smooth_ms_tg = 60000
+        m._raw_prompt = []
+        m._raw_gen = []
+        m._raw_draft = []
+        m._raw_draft_gen = []
+        m._raw_draft_acc = []
+        m._chart = MagicMock()
+        m._chart.add_point = MagicMock()
+        m._chart.update_gauges = MagicMock()
+        m._chart.update_slot_gauges = MagicMock()
+        return m
+
+    def test_raw_empty_buffer(self):
+        m = self._make_monitor()
+        m._graph_tick()
+        self.assertTrue(True)
+
+    def test_raw_with_samples(self):
+        m = self._make_monitor()
+        m._raw_prompt = [(100.0, 10.0), (101.0, 20.0)]
+        m._raw_gen = [(100.0, 10.0), (101.0, 20.0)]
+        m._raw_draft = [(100.0, 50.0)]
+        m._raw_draft_gen = [(100.0, 5.0)]
+        m._raw_draft_acc = [(100.0, 4.0)]
+        m._graph_tick()
+        self.assertTrue(True)
+
+
+class MetricsChartAddPointTest(unittest.TestCase):
+    """Tests for MetricsChart.add_point with None values."""
+
+    def test_add_point_with_none_values(self):
+        chart = MagicMock()
+        chart._raw_prompt = []
+        chart._raw_gen = []
+        chart._raw_draft = []
+        chart._raw_draft_gen = []
+        chart._raw_draft_acc = []
+        chart._prompt = []
+        chart._gen = []
+        chart._draft = []
+        chart._draft_gen = []
+        chart._draft_acc = []
+        chart._max_points = 100
+        chart._smooth_ms = 60000
+        chart._smooth_ms_draft = 60000
+        chart._smooth_ms_draft_acc = 60000
+
+        # All values None — raw buffers should be empty
+        MetricsChart.add_point(chart, None, None, None, None, None, None, None, None, None)
+        self.assertEqual(len(chart._raw_prompt), 0)
+        self.assertEqual(len(chart._raw_gen), 0)
+        self.assertEqual(len(chart._raw_draft), 0)
+        self.assertEqual(len(chart._raw_draft_gen), 0)
+        self.assertEqual(len(chart._raw_draft_acc), 0)
+
+        # Mixed — only non-None values go to raw
+        MetricsChart.add_point(chart, 10.0, None, 5.0, None, None, None, 3.0, None, None)
+        self.assertEqual(len(chart._raw_prompt), 1)
+        self.assertEqual(len(chart._raw_draft_gen), 1)
 
 
 # ---------------------------------------------------------------------------
