@@ -684,7 +684,7 @@ class MonitorTabRateComputationTest(unittest.TestCase):
             'n_tokens_draft_rejected': 10.0,
         }
         MonitorTab._apply_metrics(m, parsed)
-        # pp_rate should be None when time is None
+        # pp_rate is None when time is None -> no sample appended
         self.assertEqual(len(m._raw_prompt), 0)
         # tg_rate should still be emitted
         self.assertEqual(len(m._raw_gen), 1)
@@ -702,6 +702,7 @@ class MonitorTabRateComputationTest(unittest.TestCase):
             'n_tokens_draft_rejected': 10.0,
         }
         MonitorTab._apply_metrics(m, parsed)
+        # pp_time=0.0 -> dt=0 -> rate None -> no sample appended
         self.assertEqual(len(m._raw_prompt), 0)
         self.assertEqual(len(m._raw_gen), 1)
 
@@ -773,7 +774,7 @@ class MonitorTabRateComputationTest(unittest.TestCase):
         self.assertEqual(len(m._raw_prompt), 0)
 
     def test_no_emission_when_time_unchanged(self):
-        """If time counter hasn't increased since last poll, skip sample."""
+        """If time counter hasn't increased since last poll, no new sample appended."""
         m = self._fake_monitor()
         parsed = {
             'prompt_tokens_total': 100.0,
@@ -785,7 +786,14 @@ class MonitorTabRateComputationTest(unittest.TestCase):
             'n_tokens_draft_accepted': 40.0,
             'n_tokens_draft_rejected': 10.0,
         }
-        # First call: time goes from 0 to non-zero → emit
+        # First call: time goes from 0 to non-zero -> emit
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 1)
+        self.assertIsNotNone(m._raw_prompt[0][1])
+        self.assertEqual(len(m._raw_gen), 1)
+        self.assertIsNotNone(m._raw_gen[0][1])
+
+        # Second call: time unchanged -> no new sample
         MonitorTab._apply_metrics(m, parsed)
         self.assertEqual(len(m._raw_prompt), 1)
         self.assertEqual(len(m._raw_gen), 1)
@@ -819,8 +827,38 @@ class MonitorTabRateComputationTest(unittest.TestCase):
         # Rate is delta_tokens / delta_time = (250 - 100) / (20 - 10)
         self.assertAlmostEqual(m._raw_prompt[1][1], 15.0)
 
-    def test_unchanged_time_with_counter_increase_skips_sample(self):
-        """If time unchanged but counter increased (server bug), skip sample."""
+    def test_accumulated_delta_carries_through_idle_polls(self):
+        """When dt>0 after frozen time, accumulated delta carries through idle polls."""
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 100.0,
+            'prompt_seconds_total': 10.0,
+            'tokens_predicted_total': 200.0,
+            'tokens_predicted_seconds_total': 15.0,
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+            'n_tokens_draft_accepted': 40.0,
+            'n_tokens_draft_rejected': 10.0,
+        }
+        # First call: dt=10, rate=10.0
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 1)
+        self.assertAlmostEqual(m._raw_prompt[0][1], 10.0)
+
+        # Second call: time frozen -> no new sample, prev not updated
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 1)
+
+        # Third call: time advances, prev still holds first-call values
+        # rate = (300 - 100) / (20 - 10) = 20.0
+        parsed['prompt_tokens_total'] = 300.0
+        parsed['prompt_seconds_total'] = 20.0
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 2)
+        self.assertAlmostEqual(m._raw_prompt[1][1], 20.0)
+
+    def test_consecutive_dt_positive_no_extra_samples(self):
+        """Two consecutive samples with dt>0 produce exactly one sample each — no synthetic extras."""
         m = self._fake_monitor()
         parsed = {
             'prompt_tokens_total': 100.0,
@@ -835,12 +873,38 @@ class MonitorTabRateComputationTest(unittest.TestCase):
         MonitorTab._apply_metrics(m, parsed)
         self.assertEqual(len(m._raw_prompt), 1)
 
-        # Counter increased but time unchanged → skip
+        # Time increases normally
+        parsed['prompt_tokens_total'] = 250.0
+        parsed['prompt_seconds_total'] = 20.0
+        MonitorTab._apply_metrics(m, parsed)
+        # Exactly one new sample, no synthetic extras
+        self.assertEqual(len(m._raw_prompt), 2)
+        # Both samples have real rates, no Nones
+        self.assertIsNotNone(m._raw_prompt[0][1])
+        self.assertIsNotNone(m._raw_prompt[1][1])
+
+    def test_unchanged_time_with_counter_increase_skips_sample(self):
+        """If time unchanged but counter increased, skip sample; delta accumulates for next."""
+        m = self._fake_monitor()
+        parsed = {
+            'prompt_tokens_total': 100.0,
+            'prompt_seconds_total': 10.0,
+            'tokens_predicted_total': 200.0,
+            'tokens_predicted_seconds_total': 15.0,
+            'n_tokens_draft': 50.0,
+            'tokens_draft_seconds_total': 5.0,
+            'n_tokens_draft_accepted': 40.0,
+            'n_tokens_draft_rejected': 10.0,
+        }
+        MonitorTab._apply_metrics(m, parsed)
+        self.assertEqual(len(m._raw_prompt), 1)
+
+        # Counter increased but time unchanged -> no new sample, prev not updated
         parsed['prompt_tokens_total'] = 200.0
         MonitorTab._apply_metrics(m, parsed)
         self.assertEqual(len(m._raw_prompt), 1)
 
-        # When time finally advances, include tokens accumulated while time was
+        # When time finally advances, include all tokens accumulated while time was
         # frozen: (300 - 100) / (20 - 10) = 20 tok/s.
         parsed['prompt_tokens_total'] = 300.0
         parsed['prompt_seconds_total'] = 20.0

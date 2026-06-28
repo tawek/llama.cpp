@@ -205,6 +205,8 @@ tdr_rate = (tdr_total_now - tdr_total_prev) / dt
 draft_accept  = tda_rate / (tda_rate + tdr_rate) * 100  (or 0 if both 0)
 ```
 
+When `dt == 0` (time counter frozen), no rate is computed and no sample is appended. The previous total/time values are NOT updated, so the next poll with `dt > 0` includes all tokens accumulated during the frozen period in its rate computation.
+
 ---
 
 ## 4. Log Output Patterns for Parsing (server-context.cpp)

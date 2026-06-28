@@ -929,31 +929,33 @@ class MonitorTab(ttk.Frame):
                 self._prev_tdr_time = 0.0
 
             # Compute rates as counter deltas over time-counter deltas.
-            # Only emit a sample when the time counter has increased since
-            # the last poll; unchanged counters become gaps in the chart.
-            pp_changed  = pp_time  is not None and pp_time  > self._prev_pp_time
-            tg_changed  = tg_time  is not None and tg_time  > self._prev_tg_time
-            td_changed  = td_time  is not None and td_time  > self._prev_td_time
-            tda_changed = tda_time is not None and tda_time > self._prev_tda_time
-            tdr_changed = tdr_time is not None and tdr_time > self._prev_tdr_time
-
-            def _rate(total, prev_total, time_total, prev_time, changed):
-                if not changed:
+            # rate = dy/dt when dt > 0; skip when dt <= 0 or time is None.
+            # Previous totals/times are only updated when rate is computed,
+            # so accumulated delta carries through idle polls.
+            def _compute_rate(total, prev_total, time_total, prev_time):
+                if time_total is None or prev_time is None:
                     return None
                 dt = time_total - prev_time
                 if dt <= 0:
                     return None
                 return max(0.0, total - prev_total) / dt
 
-            pp_rate  = _rate(pp_total, self._prev_pp_total, pp_time, self._prev_pp_time, pp_changed)
-            tg_rate  = _rate(tg_total, self._prev_tg_total, tg_time, self._prev_tg_time, tg_changed)
-            td_rate  = _rate(td_total, self._prev_td_total, td_time, self._prev_td_time, td_changed)
-            tda_rate = _rate(tda_total, self._prev_tda_total, tda_time, self._prev_tda_time, tda_changed)
-            tdr_rate = _rate(tdr_total, self._prev_tdr_total, tdr_time, self._prev_tdr_time, tdr_changed)
+            pp_rate  = _compute_rate(pp_total,  self._prev_pp_total,  pp_time,  self._prev_pp_time)
+            tg_rate  = _compute_rate(tg_total,  self._prev_tg_total,  tg_time,  self._prev_tg_time)
+            td_rate  = _compute_rate(td_total,  self._prev_td_total,  td_time,  self._prev_td_time)
+            tda_rate = _compute_rate(tda_total, self._prev_tda_total, tda_time, self._prev_tda_time)
+            tdr_rate = _compute_rate(tdr_total, self._prev_tdr_total, tdr_time, self._prev_tdr_time)
 
-            raw = {'pp': pp_rate, 'tg': tg_rate, 'td': td_rate, 'ta': tda_rate, 'da': None}
+            if pp_rate is not None:
+                self._raw_prompt.append((now, pp_rate))
+            if tg_rate is not None:
+                self._raw_gen.append((now, tg_rate))
+            if td_rate is not None:
+                self._raw_draft_gen.append((now, td_rate))
+            if tda_rate is not None:
+                self._raw_draft_acc.append((now, tda_rate))
 
-            # Compute WMA values from existing buffer (before appending new samples)
+            # Compute WMA after buffer update
             cutoff_pp = now - self._graph_smooth_ms_pp / 1000.0
             cutoff_tg = now - self._graph_smooth_ms_tg / 1000.0
 
@@ -962,103 +964,55 @@ class MonitorTab(ttk.Frame):
                     return None
                 if not isinstance(cutoff, (int, float)):
                     return None
-                window = [v for t, v in buf if t >= cutoff and (max_t is None or t <= max_t)]
+                window = [v for t, v in buf if t >= cutoff and v is not None
+                          and (max_t is None or t <= max_t)]
                 if not window:
                     return None
                 n = len(window)
                 weights = [i + 1 for i in range(n)]
                 return sum(v * w for v, w in zip(window, weights)) / sum(weights)
 
+            wma_pp_now = _wma(self._raw_prompt,    cutoff_pp) if pp_rate is not None else None
+            wma_tg_now = _wma(self._raw_gen,       cutoff_tg) if tg_rate is not None else None
+            wma_td_now = _wma(self._raw_draft_gen, cutoff_tg) if td_rate  is not None else None
+            wma_ta_now = _wma(self._raw_draft_acc, cutoff_tg) if tda_rate is not None else None
+
             # Draft acceptance % — compute whenever rates are available.
+            da_rate = None
             if tda_rate is not None and tdr_rate is not None:
                 total_rej = tda_rate + tdr_rate
                 if total_rej > 0:
-                    pct = min(100.0, tda_rate / total_rej * 100)
-                    raw['da'] = max(0.0, pct)
+                    da_rate = max(0.0, min(100.0, tda_rate / total_rej * 100))
+            if da_rate is not None:
+                self._raw_draft.append((now, da_rate))
+            wma_da_now = _wma(self._raw_draft, cutoff_tg) if da_rate is not None else None
 
-            fresh = {key: value is not None for key, value in raw.items()}
-            wma_pp_now   = _wma(self._raw_prompt, cutoff_pp, now) if fresh['pp'] else None
-            wma_tg_now   = _wma(self._raw_gen, cutoff_tg, now) if fresh['tg'] else None
-            wma_da_now   = _wma(self._raw_draft, cutoff_tg, now) if fresh['da'] else None
-            wma_td_now   = _wma(self._raw_draft_gen, cutoff_tg, now) if fresh['td'] else None
-            wma_ta_now   = _wma(self._raw_draft_acc, cutoff_tg, now) if fresh['ta'] else None
+            raw = {'pp': pp_rate, 'tg': tg_rate, 'td': td_rate, 'ta': tda_rate, 'da': da_rate}
 
-            # Determine extra_sample_t from the smallest dt among changed metrics
-            extra_sample_t = None
-            min_dt = None
-            if pp_rate is not None and pp_changed:
-                dt = pp_time - self._prev_pp_time
-                if min_dt is None or dt < min_dt:
-                    min_dt = dt
-            if tg_rate is not None and tg_changed:
-                dt = tg_time - self._prev_tg_time
-                if min_dt is None or dt < min_dt:
-                    min_dt = dt
-            if td_rate is not None and td_changed:
-                dt = td_time - self._prev_td_time
-                if min_dt is None or dt < min_dt:
-                    min_dt = dt
-            if tda_rate is not None and tda_changed:
-                dt = tda_time - self._prev_tda_time
-                if min_dt is None or dt < min_dt:
-                    min_dt = dt
-            if min_dt is not None:
-                extra_sample_t = now - min_dt
-
-            # Compute extra-sample WMA from pre-existing buffer (before appending new samples)
-            wma_pp_e = _wma(self._raw_prompt, extra_sample_t - self._graph_smooth_ms_pp / 1000.0, extra_sample_t) if fresh.get('pp') else None
-            wma_tg_e = _wma(self._raw_gen, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('tg') else None
-            wma_da_e = _wma(self._raw_draft, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('da') else None
-            wma_td_e = _wma(self._raw_draft_gen, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('td') else None
-            wma_ta_e = _wma(self._raw_draft_acc, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('ta') else None
-
-            # Append new samples to buffers
-            if pp_rate is not None and pp_changed:
-                dt = pp_time - self._prev_pp_time
-                self._raw_prompt.append((now - dt, pp_rate))
-                self._raw_prompt.append((now, pp_rate))
-            if tg_rate is not None and tg_changed:
-                dt = tg_time - self._prev_tg_time
-                self._raw_gen.append((now - dt, tg_rate))
-                self._raw_gen.append((now, tg_rate))
-            if td_rate is not None and td_changed:
-                dt = td_time - self._prev_td_time
-                self._raw_draft_gen.append((now - dt, td_rate))
-                self._raw_draft_gen.append((now, td_rate))
-            if tda_rate is not None and tda_changed:
-                dt = tda_time - self._prev_tda_time
-                self._raw_draft_acc.append((now - dt, tda_rate))
-                self._raw_draft_acc.append((now, tda_rate))
-
-            # Draft acceptance raw samples — only when draft time has advanced.
-            if raw.get('da') is not None and tda_changed:
-                dt = tda_time - self._prev_tda_time
-                self._raw_draft.append((now - dt, raw['da']))
-                self._raw_draft.append((now, raw['da']))
-
-            self._push_graph_point(raw, extra_sample_t=extra_sample_t,
+            self._push_graph_point(raw, extra_sample_t=None,
                                    wma_pp=wma_pp_now, wma_tg=wma_tg_now,
                                    wma_da=wma_da_now, wma_td=wma_td_now,
                                    wma_ta=wma_ta_now,
-                                   wma_pp_e=wma_pp_e, wma_tg_e=wma_tg_e,
-                                   wma_da_e=wma_da_e, wma_td_e=wma_td_e,
-                                   wma_ta_e=wma_ta_e)
+                                   wma_pp_e=None, wma_tg_e=None,
+                                   wma_da_e=None, wma_td_e=None, wma_ta_e=None)
 
+            # Update previous totals/times only when rate was computed,
+            # so that accumulated delta carries through idle periods.
             if pp_rate is not None:
-                self._prev_pp_total = pp_total
-                self._prev_pp_time = pp_time
+                self._prev_pp_total  = pp_total
+                self._prev_pp_time   = pp_time
             if tg_rate is not None:
-                self._prev_tg_total = tg_total
-                self._prev_tg_time = tg_time
+                self._prev_tg_total  = tg_total
+                self._prev_tg_time   = tg_time
             if td_rate is not None:
-                self._prev_td_total = td_total
-                self._prev_td_time = td_time
+                self._prev_td_total  = td_total
+                self._prev_td_time   = td_time
             if tda_rate is not None:
                 self._prev_tda_total = tda_total
-                self._prev_tda_time = tda_time
+                self._prev_tda_time  = tda_time
             if tdr_rate is not None:
                 self._prev_tdr_total = tdr_total
-                self._prev_tdr_time = tdr_time
+                self._prev_tdr_time  = tdr_time
             self._using_event_metrics = True
 
         n_ctx_size = int(parsed.get('n_ctx_size', 0))
