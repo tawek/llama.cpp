@@ -741,38 +741,44 @@ class MonitorTab(ttk.Frame):
         self._chart._redraw()
         self._graph_tick_id = self.after(250, self._graph_tick)
 
-    def _push_graph_point(self, raw):
-        """Push one aligned graph point for a single /metrics probe."""
-        now = time.monotonic()
-        cutoff_pp = now - self._graph_smooth_ms_pp / 1000.0
-        cutoff_tg = now - self._graph_smooth_ms_tg / 1000.0
+    def _push_graph_point(self, raw, extra_sample_t=None,
+                          wma_pp=None, wma_tg=None, wma_da=None,
+                          wma_td=None, wma_ta=None,
+                          wma_pp_e=None, wma_tg_e=None, wma_da_e=None,
+                          wma_td_e=None, wma_ta_e=None):
+        """Push one or two aligned graph points for a single /metrics probe.
 
-        def _wma(buf, cutoff):
-            """Weighted moving average with linear envelope (newest = highest weight).
-            Returns None when no samples exist in the window.
-            """
-            if not buf:
-                return None
-            window = [v for t, v in buf if t >= cutoff]
-            if not window:
-                return None
-            n = len(window)
-            weights = [i + 1 for i in range(n)]
-            return sum(v * w for v, w in zip(window, weights)) / sum(weights)
+        WMA values are precomputed by the caller before appending new samples
+        to the raw buffers, so the WMA reflects only samples that existed
+        before this poll.
+        """
+        now = time.monotonic()
 
         fresh = {key: value is not None for key, value in raw.items()}
 
         pp_raw = raw.get('pp')
-        pp     = _wma(self._raw_prompt, cutoff_pp) if fresh['pp'] else None
+        pp     = wma_pp if wma_pp is not None else None
         tg_raw = raw.get('tg')
-        tg     = _wma(self._raw_gen, cutoff_tg) if fresh['tg'] else None
+        tg     = wma_tg if wma_tg is not None else None
         da_raw = raw.get('da')
-        da     = _wma(self._raw_draft, cutoff_tg) if fresh['da'] else None
+        da     = wma_da if wma_da is not None else None
         td_raw = raw.get('td')
-        td     = _wma(self._raw_draft_gen, cutoff_tg) if fresh['td'] else None
+        td     = wma_td if wma_td is not None else None
         ta_raw = raw.get('ta')
-        ta     = _wma(self._raw_draft_acc, cutoff_tg) if fresh['ta'] else None
+        ta     = wma_ta if wma_ta is not None else None
 
+        if extra_sample_t is not None:
+            pp_raw_e = pp_raw
+            pp_e     = wma_pp_e if wma_pp_e is not None else None
+            tg_raw_e = tg_raw
+            tg_e     = wma_tg_e if wma_tg_e is not None else None
+            da_raw_e = da_raw
+            da_e     = wma_da_e if wma_da_e is not None else None
+            td_raw_e = td_raw
+            td_e     = wma_td_e if wma_td_e is not None else None
+            ta_raw_e = ta_raw
+            ta_e     = wma_ta_e if wma_ta_e is not None else None
+            self._chart.add_point(pp_raw_e, pp_e, tg_raw_e, tg_e, da_raw_e, da_e, td_raw_e, td_e, ta_raw_e, ta_e, sample_t=extra_sample_t)
         self._chart.add_point(pp_raw, pp, tg_raw, tg, da_raw, da, td_raw, td, ta_raw, ta, sample_t=now)
         self._update_gauges({'pp': pp, 'tg': tg, 'td': td, 'ta': ta, 'da': da}, fresh)
 
@@ -937,24 +943,96 @@ class MonitorTab(ttk.Frame):
 
             raw = {'pp': pp_rate, 'tg': tg_rate, 'td': td_rate, 'ta': tda_rate, 'da': None}
 
-            if pp_rate is not None and pp_changed:
-                self._raw_prompt.append((now, pp_rate))
-            if tg_rate is not None and tg_changed:
-                self._raw_gen.append((now, tg_rate))
-            if td_rate is not None and td_changed:
-                self._raw_draft_gen.append((now, td_rate))
-            if tda_rate is not None and tda_changed:
-                self._raw_draft_acc.append((now, tda_rate))
+            # Compute WMA values from existing buffer (before appending new samples)
+            cutoff_pp = now - self._graph_smooth_ms_pp / 1000.0
+            cutoff_tg = now - self._graph_smooth_ms_tg / 1000.0
 
-            # Draft acceptance % — only emit when draft time has advanced.
-            if tda_rate is not None and tdr_rate is not None and tda_changed:
+            def _wma(buf, cutoff, max_t=None):
+                if not buf:
+                    return None
+                if not isinstance(cutoff, (int, float)):
+                    return None
+                window = [v for t, v in buf if t >= cutoff and (max_t is None or t <= max_t)]
+                if not window:
+                    return None
+                n = len(window)
+                weights = [i + 1 for i in range(n)]
+                return sum(v * w for v, w in zip(window, weights)) / sum(weights)
+
+            # Draft acceptance % — compute whenever rates are available.
+            if tda_rate is not None and tdr_rate is not None:
                 total_rej = tda_rate + tdr_rate
                 if total_rej > 0:
                     pct = min(100.0, tda_rate / total_rej * 100)
                     raw['da'] = max(0.0, pct)
-                    self._raw_draft.append((now, raw['da']))
 
-            self._push_graph_point(raw)
+            fresh = {key: value is not None for key, value in raw.items()}
+            wma_pp_now   = _wma(self._raw_prompt, cutoff_pp, now) if fresh['pp'] else None
+            wma_tg_now   = _wma(self._raw_gen, cutoff_tg, now) if fresh['tg'] else None
+            wma_da_now   = _wma(self._raw_draft, cutoff_tg, now) if fresh['da'] else None
+            wma_td_now   = _wma(self._raw_draft_gen, cutoff_tg, now) if fresh['td'] else None
+            wma_ta_now   = _wma(self._raw_draft_acc, cutoff_tg, now) if fresh['ta'] else None
+
+            # Determine extra_sample_t from the smallest dt among changed metrics
+            extra_sample_t = None
+            min_dt = None
+            if pp_rate is not None and pp_changed:
+                dt = pp_time - self._prev_pp_time
+                if min_dt is None or dt < min_dt:
+                    min_dt = dt
+            if tg_rate is not None and tg_changed:
+                dt = tg_time - self._prev_tg_time
+                if min_dt is None or dt < min_dt:
+                    min_dt = dt
+            if td_rate is not None and td_changed:
+                dt = td_time - self._prev_td_time
+                if min_dt is None or dt < min_dt:
+                    min_dt = dt
+            if tda_rate is not None and tda_changed:
+                dt = tda_time - self._prev_tda_time
+                if min_dt is None or dt < min_dt:
+                    min_dt = dt
+            if min_dt is not None:
+                extra_sample_t = now - min_dt
+
+            # Compute extra-sample WMA from pre-existing buffer (before appending new samples)
+            wma_pp_e = _wma(self._raw_prompt, extra_sample_t - self._graph_smooth_ms_pp / 1000.0, extra_sample_t) if fresh.get('pp') else None
+            wma_tg_e = _wma(self._raw_gen, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('tg') else None
+            wma_da_e = _wma(self._raw_draft, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('da') else None
+            wma_td_e = _wma(self._raw_draft_gen, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('td') else None
+            wma_ta_e = _wma(self._raw_draft_acc, extra_sample_t - self._graph_smooth_ms_tg / 1000.0, extra_sample_t) if fresh.get('ta') else None
+
+            # Append new samples to buffers
+            if pp_rate is not None and pp_changed:
+                dt = pp_time - self._prev_pp_time
+                self._raw_prompt.append((now - dt, pp_rate))
+                self._raw_prompt.append((now, pp_rate))
+            if tg_rate is not None and tg_changed:
+                dt = tg_time - self._prev_tg_time
+                self._raw_gen.append((now - dt, tg_rate))
+                self._raw_gen.append((now, tg_rate))
+            if td_rate is not None and td_changed:
+                dt = td_time - self._prev_td_time
+                self._raw_draft_gen.append((now - dt, td_rate))
+                self._raw_draft_gen.append((now, td_rate))
+            if tda_rate is not None and tda_changed:
+                dt = tda_time - self._prev_tda_time
+                self._raw_draft_acc.append((now - dt, tda_rate))
+                self._raw_draft_acc.append((now, tda_rate))
+
+            # Draft acceptance raw samples — only when draft time has advanced.
+            if raw.get('da') is not None and tda_changed:
+                dt = tda_time - self._prev_tda_time
+                self._raw_draft.append((now - dt, raw['da']))
+                self._raw_draft.append((now, raw['da']))
+
+            self._push_graph_point(raw, extra_sample_t=extra_sample_t,
+                                   wma_pp=wma_pp_now, wma_tg=wma_tg_now,
+                                   wma_da=wma_da_now, wma_td=wma_td_now,
+                                   wma_ta=wma_ta_now,
+                                   wma_pp_e=wma_pp_e, wma_tg_e=wma_tg_e,
+                                   wma_da_e=wma_da_e, wma_td_e=wma_td_e,
+                                   wma_ta_e=wma_ta_e)
 
             if pp_rate is not None:
                 self._prev_pp_total = pp_total
