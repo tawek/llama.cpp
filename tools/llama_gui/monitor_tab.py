@@ -235,6 +235,23 @@ class MetricsChart(ttk.Frame):
         c.create_text(W - mr, last_y1 + 10, text='now', anchor='e',
                       fill=self.C_TEXT, font=('Consolas', 7))
 
+        # ── Compute max values for each panel (from all visible data) ──────────
+        maxs = {}
+        for key in rects:
+            if key == 'pp':
+                all_pp = visible_values(self._prompt) + visible_values(self._raw_prompt)
+                maxs[key] = self._nice_ceil(max(all_pp)) if all_pp else 10.0
+            elif key == 'tg':
+                all_vals = (visible_values(self._gen) + visible_values(self._draft_gen)
+                            + visible_values(self._draft_acc) + visible_values(self._raw_gen)
+                            + visible_values(self._raw_draft_gen) + visible_values(self._raw_draft_acc))
+                maxs[key] = self._nice_ceil(max(all_vals)) if all_vals else 10.0
+            elif key == 'draft_pct':
+                maxs[key] = 100.0
+            elif key == 'draft_tokens':
+                all_dt = visible_values(self._draft_gen) + visible_values(self._draft_acc)
+                maxs[key] = self._nice_ceil(max(all_dt)) if all_dt else 10.0
+
         # ── Panel backgrounds, grids, and axis labels ─────────────────────────
         for key, (x0, y0, x1, y1) in rects.items():
             c.create_rectangle(x0, y0, x1, y1, fill=self.C_PLOT_BG, outline=self.C_AXIS)
@@ -243,7 +260,7 @@ class MetricsChart(ttk.Frame):
             if key == 'pp':
                 valid = visible_values(self._prompt)
                 panel_has_data = bool(valid)
-                max_val = self._nice_ceil(max(valid)) if valid else 10.0
+                max_val = maxs.get(key, 10.0)
                 self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
                                 fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
                 c.create_text(6, (y0 + y1) // 2, text='PP tok/s', angle=90,
@@ -256,10 +273,7 @@ class MetricsChart(ttk.Frame):
                 valid_dg = visible_values(self._draft_gen)
                 valid_da = visible_values(self._draft_acc)
                 panel_has_data = bool(valid_gen or valid_dg or valid_da)
-                max_val = self._nice_ceil(max(valid_gen)) if valid_gen else 10.0
-                max_dt = (self._nice_ceil(max(valid_dg + valid_da))
-                          if valid_dg or valid_da else 10.0)
-                max_val = max(max_val, max_dt)
+                max_val = maxs.get(key, 10.0)
                 self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
                                 fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
                 c.create_text(6, (y0 + y1) // 2, text='TG tok/s', angle=90,
@@ -281,10 +295,10 @@ class MetricsChart(ttk.Frame):
                               fill=self.C_DRAFT, font=('Consolas', 7))
 
             elif key == 'draft_tokens':
-                all_dt  = visible_values(self._draft_gen) + visible_values(self._draft_acc)
+                all_dt = visible_values(self._draft_gen) + visible_values(self._draft_acc)
                 panel_has_data = bool(all_dt)
-                max_dt  = self._nice_ceil(max(all_dt)) if all_dt else 10.0
-                self._draw_grid(c, x0, y0, x1, y1, ml, max_dt, n_gl,
+                max_val = maxs.get(key, 10.0)
+                self._draw_grid(c, x0, y0, x1, y1, ml, max_val, n_gl,
                                 fmt=lambda v: f'{v:.0f}' if v < 1000 else f'{v/1000:.1f}k')
                 c.create_text(6, (y0 + y1) // 2, text='dtok', angle=90,
                               fill=self.C_AXIS, font=('Consolas', 7))
@@ -326,18 +340,14 @@ class MetricsChart(ttk.Frame):
 
         if 'pp' in rects:
             r = rects['pp']
-            all_pp = visible_values(self._prompt) + visible_values(self._raw_prompt)
-            max_pp = self._nice_ceil(max(all_pp)) if all_pp else 10.0
+            max_pp = maxs['pp']
             to_y_pp = make_to_y(r[1], r[3], max_pp)
             draw_line(self._raw_prompt, self.C_PROMPT_RAW, to_y_pp, width=0.7, smooth=False)
             draw_line(self._prompt, self.C_PROMPT, to_y_pp)
 
         if 'tg' in rects:
             r = rects['tg']
-            all_vals = (visible_values(self._gen) + visible_values(self._draft_gen)
-                        + visible_values(self._draft_acc) + visible_values(self._raw_gen)
-                        + visible_values(self._raw_draft_gen) + visible_values(self._raw_draft_acc))
-            max_tg = self._nice_ceil(max(all_vals)) if all_vals else 10.0
+            max_tg = maxs['tg']
             to_y_tg = make_to_y(r[1], r[3], max_tg)
             draw_line(self._raw_gen, self.C_GEN_RAW, to_y_tg, width=0.7, smooth=False)
             n_rdt = len(self._raw_draft_gen)
