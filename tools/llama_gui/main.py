@@ -88,6 +88,7 @@ class MainWindow:
         self._command = ''
         self._monitoring = False
         self._health_check_id = None
+        self._health_check_timeout = 120
         self._log_queue: queue.Queue = queue.Queue()   # thread → main-thread
 
         # Server URL for external monitoring (must be set before _build_ui)
@@ -369,7 +370,6 @@ class MainWindow:
         self._status_label.config(text='Connecting...')
 
         # Schedule health check after server starts
-        self._health_check_timeout = 120
         self._health_check_attempts = 0
         self._poll_health()
 
@@ -475,46 +475,40 @@ class MainWindow:
         ttk.Label(dlg, text='Startup timeout (s):').grid(
             row=1, column=0, sticky='w', **pad)
         timeout_var = tk.StringVar(value=str(self._health_check_timeout))
-        ttk.Spinbox(dlg, from_=10, to=600, increment=10,
-                     textvariable=timeout_var, width=8).grid(
+        ttk.Spinbox(dlg, textvariable=timeout_var, width=8).grid(
             row=1, column=1, sticky='w', **pad)
 
         # Monitor refresh interval
         ttk.Label(dlg, text='Monitor refresh (ms):').grid(
             row=2, column=0, sticky='w', **pad)
         refresh_var = tk.StringVar(value=str(self.monitor_tab._refresh_ms))
-        ttk.Spinbox(dlg, from_=500, to=10000, increment=500,
-                     textvariable=refresh_var, width=8).grid(
+        ttk.Spinbox(dlg, textvariable=refresh_var, width=8).grid(
             row=2, column=1, sticky='w', **pad)
 
         # Prometheus metrics sample interval
         ttk.Label(dlg, text='Metrics sample (ms):').grid(
             row=3, column=0, sticky='w', **pad)
         metrics_var = tk.StringVar(value=str(self.monitor_tab._metrics_sample_ms))
-        ttk.Spinbox(dlg, from_=100, to=60000, increment=100,
-                     textvariable=metrics_var, width=8).grid(
+        ttk.Spinbox(dlg, textvariable=metrics_var, width=8).grid(
             row=3, column=1, sticky='w', **pad)
 
         # Graph smoothing windows
         ttk.Label(dlg, text='Smooth PP (ms):').grid(
             row=4, column=0, sticky='w', **pad)
         smooth_pp_var = tk.StringVar(value=str(self.monitor_tab._graph_smooth_ms_pp))
-        ttk.Spinbox(dlg, from_=100, to=30000, increment=500,
-                     textvariable=smooth_pp_var, width=8).grid(
+        ttk.Spinbox(dlg, textvariable=smooth_pp_var, width=8).grid(
             row=4, column=1, sticky='w', **pad)
         ttk.Label(dlg, text='Smooth TG (ms):').grid(
             row=5, column=0, sticky='w', **pad)
         smooth_tg_var = tk.StringVar(value=str(self.monitor_tab._graph_smooth_ms_tg))
-        ttk.Spinbox(dlg, from_=100, to=30000, increment=500,
-                     textvariable=smooth_tg_var, width=8).grid(
+        ttk.Spinbox(dlg, textvariable=smooth_tg_var, width=8).grid(
             row=5, column=1, sticky='w', **pad)
 
         # Graph time window
         ttk.Label(dlg, text='Graph window (s):').grid(
             row=6, column=0, sticky='w', **pad)
         window_var = tk.StringVar(value=str(self.monitor_tab._graph_time_window_s))
-        ttk.Spinbox(dlg, from_=30, to=600, increment=30,
-                     textvariable=window_var, width=8).grid(
+        ttk.Spinbox(dlg, textvariable=window_var, width=8).grid(
             row=6, column=1, sticky='w', **pad)
 
         # Theme — live preview: changing the selection immediately re-renders
@@ -571,32 +565,14 @@ class MainWindow:
 
         def _ok():
             self.config_tab._server_bin_var.set(bin_var.get())
-            try:
-                self._health_check_timeout = max(10, int(timeout_var.get()))
-            except ValueError:
-                pass
-            try:
-                self.monitor_tab._refresh_ms = max(500, int(refresh_var.get()))
-            except ValueError:
-                pass
-            try:
-                self.monitor_tab._metrics_sample_ms = max(100, int(metrics_var.get()))
-            except ValueError:
-                pass
-            try:
-                self.monitor_tab._graph_smooth_ms_pp = max(100, min(30000, int(smooth_pp_var.get())))
-            except ValueError:
-                pass
-            try:
-                self.monitor_tab._graph_smooth_ms_tg = max(100, min(30000, int(smooth_tg_var.get())))
-            except ValueError:
-                pass
-            try:
-                new_win = max(30, min(600, int(window_var.get())))
-                self.monitor_tab._graph_time_window_s = new_win
-                self.monitor_tab._chart.set_time_window(new_win)
-            except ValueError:
-                pass
+            self._health_check_timeout = int(timeout_var.get())
+            self.monitor_tab._refresh_ms = int(refresh_var.get())
+            self.monitor_tab._metrics_sample_ms = int(metrics_var.get())
+            self.monitor_tab._graph_smooth_ms_pp = int(smooth_pp_var.get())
+            self.monitor_tab._graph_smooth_ms_tg = int(smooth_tg_var.get())
+            new_win = int(window_var.get())
+            self.monitor_tab._graph_time_window_s = new_win
+            self.monitor_tab._chart.set_time_window(new_win)
             # Theme already applied live; just persist the chosen value
             self._theme_mode = theme_var.get()
             # Graph visibility already applied live via traces; nothing extra needed
@@ -696,15 +672,15 @@ class MainWindow:
                 if 'metrics_sample_ms' in prefs:
                     self.monitor_tab._metrics_sample_ms = int(prefs['metrics_sample_ms'])
                 if 'graph_smooth_ms_pp' in prefs:
-                    self.monitor_tab._graph_smooth_ms_pp = max(100, min(30000, int(prefs['graph_smooth_ms_pp'])))
+                    self.monitor_tab._graph_smooth_ms_pp = int(prefs['graph_smooth_ms_pp'])
                 elif 'graph_smooth_ms' in prefs:
-                    self.monitor_tab._graph_smooth_ms_pp = max(100, min(30000, int(prefs['graph_smooth_ms'])))
+                    self.monitor_tab._graph_smooth_ms_pp = int(prefs['graph_smooth_ms'])
                 if 'graph_smooth_ms_tg' in prefs:
-                    self.monitor_tab._graph_smooth_ms_tg = max(100, min(30000, int(prefs['graph_smooth_ms_tg'])))
+                    self.monitor_tab._graph_smooth_ms_tg = int(prefs['graph_smooth_ms_tg'])
                 elif 'graph_smooth_ms' in prefs:
-                    self.monitor_tab._graph_smooth_ms_tg = max(100, min(30000, int(prefs['graph_smooth_ms'])))
+                    self.monitor_tab._graph_smooth_ms_tg = int(prefs['graph_smooth_ms'])
                 if 'graph_time_window_s' in prefs:
-                    w = max(30, min(600, int(prefs['graph_time_window_s'])))
+                    w = int(prefs['graph_time_window_s'])
                     self.monitor_tab._graph_time_window_s = w
                     self.monitor_tab._chart.set_time_window(w)
                 if 'health_timeout' in prefs:
