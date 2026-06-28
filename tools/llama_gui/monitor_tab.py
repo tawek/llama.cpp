@@ -1014,26 +1014,16 @@ class MonitorTab(ttk.Frame):
 
             # Append new samples to buffers
             if pp_rate is not None and pp_changed:
-                dt = pp_time - self._prev_pp_time
-                self._raw_prompt.append((now - dt, pp_rate))
                 self._raw_prompt.append((now, pp_rate))
             if tg_rate is not None and tg_changed:
-                dt = tg_time - self._prev_tg_time
-                self._raw_gen.append((now - dt, tg_rate))
                 self._raw_gen.append((now, tg_rate))
             if td_rate is not None and td_changed:
-                dt = td_time - self._prev_td_time
-                self._raw_draft_gen.append((now - dt, td_rate))
                 self._raw_draft_gen.append((now, td_rate))
             if tda_rate is not None and tda_changed:
-                dt = tda_time - self._prev_tda_time
-                self._raw_draft_acc.append((now - dt, tda_rate))
                 self._raw_draft_acc.append((now, tda_rate))
 
             # Draft acceptance raw samples — only when draft time has advanced.
             if raw.get('da') is not None and tda_changed:
-                dt = tda_time - self._prev_tda_time
-                self._raw_draft.append((now - dt, raw['da']))
                 self._raw_draft.append((now, raw['da']))
 
             self._push_graph_point(raw, extra_sample_t=extra_sample_t,

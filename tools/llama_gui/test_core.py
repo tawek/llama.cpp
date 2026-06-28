@@ -852,6 +852,20 @@ class MonitorTabRateComputationTest(unittest.TestCase):
 class MonitorTabWMATest(unittest.TestCase):
     """Tests for WMA behavior with None values."""
 
+    def test_extra_graph_point_is_inserted_before_current_point(self):
+        m = MagicMock()
+        m._chart = MagicMock()
+        m._gauges = {}
+        raw = {'pp': 10.0, 'tg': None, 'td': None, 'ta': None, 'da': None}
+
+        with patch('monitor_tab.time.monotonic', return_value=100.0):
+            MonitorTab._push_graph_point(m, raw, extra_sample_t=99.5)
+
+        calls = m._chart.add_point.call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].kwargs['sample_t'], 99.5)
+        self.assertEqual(calls[1].kwargs['sample_t'], 100.0)
+
     def _make_monitor(self):
         m = MagicMock()
         m._graph_smooth_ms_pp = 60000
