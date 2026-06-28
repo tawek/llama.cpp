@@ -959,23 +959,28 @@ class MonitorTab(ttk.Frame):
             cutoff_pp = now - self._graph_smooth_ms_pp / 1000.0
             cutoff_tg = now - self._graph_smooth_ms_tg / 1000.0
 
-            def _wma(buf, cutoff, max_t=None):
+            def _wma(buf, cutoff, max_t=None, n_samples=None):
                 if not buf:
                     return None
                 if not isinstance(cutoff, (int, float)):
                     return None
-                window = [v for t, v in buf if t >= cutoff and v is not None
-                          and (max_t is None or t <= max_t)]
-                if not window:
+                # Collect the last n_samples with rate != None, skipping None entries
+                # so the number of samples used for WMA is always constant.
+                valid = [(t, v) for t, v in buf if v is not None
+                         and t >= cutoff and (max_t is None or t <= max_t)]
+                if not valid:
                     return None
+                if n_samples is not None and len(valid) > n_samples:
+                    valid = valid[-n_samples:]
+                window = [v for t, v in valid]
                 n = len(window)
                 weights = [i + 1 for i in range(n)]
                 return sum(v * w for v, w in zip(window, weights)) / sum(weights)
 
-            wma_pp_now = _wma(self._raw_prompt,    cutoff_pp) if pp_rate is not None else None
-            wma_tg_now = _wma(self._raw_gen,       cutoff_tg) if tg_rate is not None else None
-            wma_td_now = _wma(self._raw_draft_gen, cutoff_tg) if td_rate  is not None else None
-            wma_ta_now = _wma(self._raw_draft_acc, cutoff_tg) if tda_rate is not None else None
+            wma_pp_now = _wma(self._raw_prompt,    cutoff_pp, n_samples=10) if pp_rate is not None else None
+            wma_tg_now = _wma(self._raw_gen,       cutoff_tg, n_samples=10) if tg_rate is not None else None
+            wma_td_now = _wma(self._raw_draft_gen, cutoff_tg, n_samples=10) if td_rate  is not None else None
+            wma_ta_now = _wma(self._raw_draft_acc, cutoff_tg, n_samples=10) if tda_rate is not None else None
 
             # Draft acceptance % — compute whenever rates are available.
             da_rate = None
@@ -985,7 +990,7 @@ class MonitorTab(ttk.Frame):
                     da_rate = max(0.0, min(100.0, tda_rate / total_rej * 100))
             if da_rate is not None:
                 self._raw_draft.append((now, da_rate))
-            wma_da_now = _wma(self._raw_draft, cutoff_tg) if da_rate is not None else None
+            wma_da_now = _wma(self._raw_draft, cutoff_tg, n_samples=10) if da_rate is not None else None
 
             raw = {'pp': pp_rate, 'tg': tg_rate, 'td': td_rate, 'ta': tda_rate, 'da': da_rate}
 
