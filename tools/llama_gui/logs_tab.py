@@ -117,6 +117,23 @@ class LogsTab(ttk.Frame):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def add_log_lines(self, lines):
+        """Add multiple lines in batch (e.g., history loaded from a log file).
+
+        Skips metric parsing and widget update for performance.
+        Lines are stored in ``_log_lines`` and will appear in the widget
+        when the tab is switched to and ``_on_map`` populates it.
+        """
+        for line in lines:
+            lower = line.lower()
+            if any(p in lower for p in self._SUPPRESS):
+                continue
+            level = self._detect_level(line)
+            timestamp = time.strftime('%H:%M:%S')
+            self._log_lines.append((level, timestamp, line))
+        if len(self._log_lines) > self._max_lines:
+            self._log_lines = self._log_lines[-self._max_lines:]
+
     def add_log_line(self, line):
         """Add a line.  Always stores in _log_lines and parses metrics.
         Widget update is skipped while the tab is hidden or still populating."""

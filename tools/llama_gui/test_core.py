@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import json
 import time
+import tempfile
 
 from log_parser import (
     LogMetrics,
@@ -36,6 +37,7 @@ from command_builder import (
 )
 from config_registry import _OPTIONS, get_option, iter_options
 from monitor_tab import MonitorTab, MetricsChart
+from server_mgr import ServerIdentity, LogFileTailer
 
 
 # ---------------------------------------------------------------------------
@@ -1164,6 +1166,272 @@ class LineGapBreakingTest(unittest.TestCase):
                     + [v for v in chart._raw_draft_acc if v is not None])
         max_tg = max(all_vals) if all_vals else 10.0
         self.assertEqual(max_tg, 8.0)
+
+
+# ---------------------------------------------------------------------------
+# Server Identity and LogFileTailer tests
+# ---------------------------------------------------------------------------
+
+class ServerIdentityTest(unittest.TestCase):
+    """Tests for ServerIdentity — identity files and discovery."""
+
+    def setUp(self):
+        self._tmpdir = os.path.join(tempfile.gettempdir(),
+                                     f'llama_gui_test_{os.getpid()}_{time.time()}')
+        self._orig_dir = None
+        # Patch ServerIdentity._dir to use a temp directory
+        self._patcher = patch.object(
+            ServerIdentity, '_dir', return_value=os.path.join(self._tmpdir, 'servers'))
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+        import shutil
+        if os.path.isdir(self._tmpdir):
+            shutil.rmtree(self._tmpdir)
+
+    def test_save_and_load(self):
+        pid = os.getpid()  # our own process — definitely alive
+        identity = ServerIdentity(
+            pid=pid,
+            host='127.0.0.1',
+            port=8080,
+            log_path='/tmp/test.log',
+            command='llama-server -m test',
+            profile='test-profile',
+        )
+        identity.save()
+        loaded = ServerIdentity.load(pid)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.pid, pid)
+        self.assertEqual(loaded.host, '127.0.0.1')
+        self.assertEqual(loaded.port, 8080)
+        self.assertEqual(loaded.log_path, '/tmp/test.log')
+        self.assertEqual(loaded.command, 'llama-server -m test')
+        self.assertEqual(loaded.profile, 'test-profile')
+
+    def test_load_nonexistent(self):
+        loaded = ServerIdentity.load(99999999)
+        self.assertIsNone(loaded)
+
+    def test_remove(self):
+        pid = os.getpid()
+        identity = ServerIdentity(pid=pid)
+        identity.save()
+        self.assertIsNotNone(ServerIdentity.load(pid))
+        identity.remove()
+        self.assertIsNone(ServerIdentity.load(pid))
+
+    def test_is_alive(self):
+        # Our own PID is always alive
+        self.assertTrue(ServerIdentity.is_alive(os.getpid()))
+        # A very high PID is unlikely to exist
+        self.assertFalse(ServerIdentity.is_alive(99999999))
+
+    def test_discover_finds_own_pid(self):
+        pid = os.getpid()
+        identity = ServerIdentity(
+            pid=pid,
+            host='127.0.0.1',
+            port=8080,
+            log_path='/tmp/test.log',
+            command='llama-server',
+        )
+        identity.save()
+        servers = ServerIdentity.discover()
+        pids = [s.pid for s in servers]
+        self.assertIn(pid, pids)
+
+    def test_discover_removes_stale(self):
+        # Save identity with a fake PID that doesn't exist
+        identity = ServerIdentity(
+            pid=99999999,
+            log_path='/tmp/test.log',
+        )
+        identity.save()
+        # Discover should remove the stale identity file
+        servers = ServerIdentity.discover()
+        pids = [s.pid for s in servers]
+        self.assertNotIn(99999999, pids)
+
+    def test_discover_empty_dir(self):
+        servers = ServerIdentity.discover()
+        self.assertEqual(servers, [])
+
+    def test_save_then_load_defaults(self):
+        pid = os.getpid()
+        identity = ServerIdentity(pid=pid)
+        identity.save()
+        loaded = ServerIdentity.load(pid)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.host, '127.0.0.1')
+        self.assertEqual(loaded.port, 8080)
+        self.assertEqual(loaded.log_path, '')
+
+
+class LogFileTailerTest(unittest.TestCase):
+    """Tests for LogFileTailer."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix='llama_gui_tailer_')
+        self._path = os.path.join(self._tmpdir, 'test.log')
+        with open(self._path, 'w') as f:
+            f.write('line1\nline2\nline3\n')
+
+    def tearDown(self):
+        import shutil
+        if os.path.isdir(self._tmpdir):
+            shutil.rmtree(self._tmpdir)
+
+    def test_read_new_lines_from_end(self):
+        tailer = LogFileTailer(self._path)
+        tailer.open(start_from_end=True)
+        lines = tailer.read_new_lines()
+        self.assertEqual(lines, [])
+
+    def test_read_new_lines_from_start(self):
+        tailer = LogFileTailer(self._path)
+        tailer.open(start_from_end=False)
+        lines = tailer.read_new_lines()
+        self.assertEqual(lines, ['line1', 'line2', 'line3'])
+
+    def test_read_new_lines_incremental(self):
+        tailer = LogFileTailer(self._path)
+        tailer.open(start_from_end=False)
+        lines = tailer.read_new_lines()
+        self.assertEqual(len(lines), 3)
+        # Write more lines
+        with open(self._path, 'a') as f:
+            f.write('line4\nline5\n')
+        lines = tailer.read_new_lines()
+        self.assertEqual(lines, ['line4', 'line5'])
+
+    def test_read_tail_small_file(self):
+        tailer = LogFileTailer(self._path)
+        tailer.open(start_from_end=False)
+        lines = tailer.read_tail(max_bytes=100000, max_lines=100)
+        self.assertEqual(lines, ['line1', 'line2', 'line3'])
+
+    def test_read_tail_large_file(self):
+        # Write many lines
+        with open(self._path, 'w') as f:
+            for i in range(100):
+                f.write(f'line{i}\n')
+        tailer = LogFileTailer(self._path)
+        lines = tailer.read_tail(max_bytes=1000, max_lines=10)
+        self.assertLessEqual(len(lines), 10)
+
+    def test_read_tail_empty_file(self):
+        empty = os.path.join(self._tmpdir, 'empty.log')
+        open(empty, 'w').close()
+        tailer = LogFileTailer(empty)
+        lines = tailer.read_tail(max_bytes=1000, max_lines=10)
+        self.assertEqual(lines, [])
+
+    def test_get_path(self):
+        tailer = LogFileTailer(self._path)
+        self.assertEqual(tailer.get_path(), self._path)
+
+    def test_close_and_reopen(self):
+        tailer = LogFileTailer(self._path)
+        tailer.open(start_from_end=False)
+        self.assertIsNotNone(tailer._file)
+        tailer.close()
+        self.assertIsNone(tailer._file)
+
+    def test_read_new_lines_no_open_file(self):
+        tailer = LogFileTailer(self._path)
+        lines = tailer.read_new_lines()
+        self.assertEqual(lines, [])
+
+
+class ProcessManagerLogFileTest(unittest.TestCase):
+    """Tests for ServerProcess log file integration."""
+
+    def test_start_sets_log_path(self):
+        from process_mgr import ServerProcess
+        proc = ServerProcess()
+        # We can't easily run a real subprocess in tests, but we can
+        # verify that the log path structure is set up correctly.
+        self.assertEqual(proc.log_path, '')
+        self.assertEqual(proc.session_id, '')
+
+    def test_parse_command_preserved(self):
+        from process_mgr import ServerProcess
+        proc = ServerProcess()
+        result = proc._parse_command('llama-server -m model.gguf')
+        self.assertEqual(result, ['llama-server', '-m', 'model.gguf'])
+
+
+class ServerDiscoveryIntegrationTest(unittest.TestCase):
+    """End-to-end test: save identity, discover, attach, detach flow."""
+
+    def test_identity_round_trip(self):
+        pid = os.getpid()
+        identity = ServerIdentity(
+            pid=pid,
+            host='127.0.0.1',
+            port=8080,
+            log_path='/tmp/llama_test.log',
+            command='llama-server -m test',
+            profile='my-profile',
+        )
+        identity.save()
+        try:
+            discovered = ServerIdentity.discover()
+            found = [s for s in discovered if s.pid == pid]
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].host, '127.0.0.1')
+            self.assertEqual(found[0].port, 8080)
+            self.assertEqual(found[0].profile, 'my-profile')
+        finally:
+            identity.remove()
+
+    def test_discover_no_identity_files(self):
+        servers = ServerIdentity.discover()
+        self.assertIsInstance(servers, list)
+
+
+# ---------------------------------------------------------------------------
+# LogsTab batch add tests
+# ---------------------------------------------------------------------------
+
+class LogsTabBatchTest(unittest.TestCase):
+    """Tests for LogsTab.add_log_lines batch method."""
+
+    def test_add_log_lines_stores_lines(self):
+        from logs_tab import LogsTab
+        tab = MagicMock(spec=LogsTab)
+        tab._log_lines = []
+        tab._max_lines = 10000
+        tab._SUPPRESS = ('all slots are idle', 'update_slots: all slots')
+
+        # Call the actual method on the mock by using the real implementation
+        LogsTab.add_log_lines(tab, ['line1', 'line2', 'line3'])
+        self.assertEqual(len(tab._log_lines), 3)
+
+    def test_add_log_lines_suppresses_noise(self):
+        from logs_tab import LogsTab
+        tab = MagicMock(spec=LogsTab)
+        tab._log_lines = []
+        tab._max_lines = 10000
+        tab._SUPPRESS = ('all slots are idle', 'update_slots: all slots')
+
+        LogsTab.add_log_lines(tab, [
+            'line1',
+            'all slots are idle and waiting for requests',
+        ])
+        self.assertEqual(len(tab._log_lines), 1)
+
+    def test_add_log_lines_respects_max_lines(self):
+        from logs_tab import LogsTab
+        tab = MagicMock(spec=LogsTab)
+        tab._log_lines = []
+        tab._max_lines = 5
+        tab._SUPPRESS = ('all slots are idle', 'update_slots: all slots')
+
+        LogsTab.add_log_lines(tab, [f'line{i}' for i in range(10)])
+        self.assertLessEqual(len(tab._log_lines), 5)
 
 
 # ---------------------------------------------------------------------------

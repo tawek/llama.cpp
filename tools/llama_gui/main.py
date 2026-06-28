@@ -7,8 +7,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import sys
 import os
+import time
 import queue
 from pathlib import Path
+from typing import Optional
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +21,12 @@ from logs_tab import LogsTab
 from api_client import ServerAPI
 from process_mgr import ServerProcess
 from system_monitor import SystemMonitor
+from server_mgr import ServerIdentity, LogFileTailer
+
+# Process attachment states
+STATE_IDLE = 0            # No server running or connected
+STATE_LOCAL_ATTACHED = 1  # Server launched locally, logs streaming
+STATE_REMOTE_ATTACHED = 2 # Connected to an externally running server
 
 
 def _detect_system_theme() -> str:
@@ -90,6 +98,11 @@ class MainWindow:
         self._health_check_id = None
         self._health_check_timeout = 120
         self._log_queue: queue.Queue = queue.Queue()   # thread → main-thread
+
+        # Detachable server state
+        self._state = STATE_IDLE
+        self._log_tailer: Optional[LogFileTailer] = None
+        self._identity: Optional[ServerIdentity] = None
 
         # Server URL for external monitoring (must be set before _build_ui)
         self._server_url_var = tk.StringVar()
@@ -216,19 +229,27 @@ class MainWindow:
                                         command=self._restart_server)
         self._btn_restart.grid(row=0, column=2, padx=2, pady=2, sticky='w')
 
-        ttk.Separator(row0, orient='vertical').grid(
-            row=0, column=3, padx=8, pady=2, sticky='ns')
+        self._btn_detach = ttk.Button(row0, text='Detach', state='disabled',
+                                       command=self._detach_server)
+        self._btn_detach.grid(row=0, column=3, padx=2, pady=2, sticky='w')
 
-        self._lbl_server_status = ttk.Label(row0, text='Server: Not started',
-                                             foreground='gray')
-        self._lbl_server_status.grid(row=0, column=4, padx=4, pady=2, sticky='w')
+        self._btn_attach = ttk.Button(row0, text='Attach', state='disabled',
+                                       command=self._show_attach_dialog)
+        self._btn_attach.grid(row=0, column=4, padx=2, pady=2, sticky='w')
 
         ttk.Separator(row0, orient='vertical').grid(
             row=0, column=5, padx=8, pady=2, sticky='ns')
 
+        self._lbl_server_status = ttk.Label(row0, text='Server: Not started',
+                                             foreground='gray')
+        self._lbl_server_status.grid(row=0, column=6, padx=4, pady=2, sticky='w')
+
+        ttk.Separator(row0, orient='vertical').grid(
+            row=0, column=7, padx=8, pady=2, sticky='ns')
+
         self._btn_settings = ttk.Button(row0, text='Settings',
                                          command=self._show_settings)
-        self._btn_settings.grid(row=0, column=6, padx=2, pady=2, sticky='e')
+        self._btn_settings.grid(row=0, column=8, padx=2, pady=2, sticky='e')
 
         # ── Row 1: Connection controls ────────────────────────────────────────
         row1 = ttk.Frame(toolbar)
@@ -290,14 +311,27 @@ class MainWindow:
         self._btn_start.config(state='disabled')
         self._btn_stop.config(state='normal')
         self._btn_restart.config(state='normal')
+        self._btn_detach.config(state='normal')
+        self._btn_attach.config(state='disabled')
 
     def _set_buttons_stopped(self):
         self._btn_start.config(state='normal')
         self._btn_stop.config(state='disabled')
         self._btn_restart.config(state='disabled')
+        self._btn_detach.config(state='disabled')
+        self._btn_attach.config(state='normal' if self._find_servers() else 'disabled')
         self._btn_open_browser.config(state='disabled')
         self._lbl_server_status.config(text='Server: Not started',
                                         foreground='gray')
+
+    def _set_buttons_remote(self):
+        """Buttons for remote-attached state (no local process to manage)."""
+        self._btn_start.config(state='disabled')
+        self._btn_stop.config(state='disabled')
+        self._btn_restart.config(state='disabled')
+        self._btn_detach.config(state='disabled')
+        self._btn_attach.config(state='normal')
+        self._btn_open_browser.config(state='normal')
 
     def _ensure_directories(self):
         """Create any directories required by the current command before launch."""
@@ -366,8 +400,29 @@ class MainWindow:
                                  'Make sure llama-server is on PATH.')
             return
 
+        self._state = STATE_LOCAL_ATTACHED
         self._set_buttons_started()
         self._status_label.config(text='Connecting...')
+
+        # Write identity file so the server can be discovered after detach
+        host = '127.0.0.1'
+        port = 8080
+        opts = self.config_tab.get_options()
+        host_opt = opts.get('host')
+        port_opt = opts.get('port')
+        if host_opt:
+            host = str(host_opt.get_value()).strip() or host
+        if port_opt:
+            port = int(port_opt.get_value()) if port_opt.get_value() else port
+        self._identity = ServerIdentity(
+            pid=self.process.pid or 0,
+            host=host,
+            port=port,
+            log_path=self.process.log_path,
+            command=self._command,
+            profile=getattr(self.config_tab, '_current_profile', ''),
+        )
+        self._identity.save()
 
         # Schedule health check after server starts
         self._health_check_attempts = 0
@@ -414,6 +469,10 @@ class MainWindow:
         self.root.after(0, self._handle_process_stopped)
 
     def _handle_process_stopped(self):
+        if self._identity:
+            self._identity.remove()
+            self._identity = None
+        self._state = STATE_IDLE
         self._set_buttons_stopped()
         self._status_label.config(text='Server stopped unexpectedly')
         self._lbl_server_status.config(text='Server: Crashed', foreground='red')
@@ -425,6 +484,11 @@ class MainWindow:
             self._health_check_id = None
 
         self.process.stop()
+        # Clean up identity file
+        if self._identity:
+            self._identity.remove()
+            self._identity = None
+        self._state = STATE_IDLE
         self._set_buttons_stopped()
         self._status_label.config(text='Server stopped')
         self._lbl_server_status.config(text='Server: Disconnected', foreground='gray')
@@ -434,6 +498,210 @@ class MainWindow:
         self._stop_server()
         self._command = self.config_tab.get_command()
         self.root.after(500, self._start_server)
+
+    def _detach_server(self):
+        """Detach from the currently running local server.
+
+        The server process continues running, identity file remains
+        on disk so the user can re-attach later.
+        """
+        if self._state != STATE_LOCAL_ATTACHED:
+            return
+
+        # Save identity before detaching
+        host = self._identity.host if self._identity else '127.0.0.1'
+        port = self._identity.port if self._identity else 8080
+        identity = ServerIdentity(
+            pid=self.process.pid or 0,
+            host=host,
+            port=port,
+            log_path=self.process.log_path,
+            command=self._command,
+            profile=getattr(self.config_tab, '_current_profile', ''),
+        )
+        identity.save()
+
+        # Stop log streaming from the process
+        self._stop_log_tailer()
+        self.process._callbacks['stdout'].clear()
+        self.process._callbacks['stopped'].clear()
+
+        self._state = STATE_IDLE
+        self._set_buttons_stopped()
+        self._lbl_server_status.config(
+            text='Server: Detached — use Attach to reconnect', foreground='orange')
+        self._status_label.config(text='Server detached')
+        self.logs_tab.add_log_line('[detach] Server detached. Process continues running.')
+
+    def _show_attach_dialog(self):
+        """Show a dialog listing discovered servers to attach to."""
+        servers = self._find_servers()
+        if not servers:
+            messagebox.showinfo('Attach to Server',
+                                'No running servers found.')
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Attach to Running Server')
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text='Select a running server to attach to:').pack(
+            padx=12, pady=(12, 4), anchor='w')
+
+        frame = ttk.Frame(dlg)
+        frame.pack(padx=12, pady=4, fill='both', expand=True)
+
+        listbox = tk.Listbox(frame, width=70, height=8,
+                              font=('Consolas', 9))
+        listbox.pack(side='left', fill='both', expand=True)
+        scroll = ttk.Scrollbar(frame, orient='vertical',
+                                command=listbox.yview)
+        scroll.pack(side='right', fill='y')
+        listbox.configure(yscrollcommand=scroll.set)
+
+        # Populate
+        selected = [None]  # mutable cell for the closure
+
+        def _fmt(ident):
+            started = time.strftime(
+                '%Y-%m-%d %H:%M:%S',
+                time.localtime(ident.started_at))
+            return (f'PID {ident.pid}  {ident.host}:{ident.port}  '
+                    f'started {started}  [{ident.profile or "no profile"}]')
+
+        for i, ident in enumerate(servers):
+            listbox.insert(tk.END, _fmt(ident))
+        listbox.selection_set(0)
+        selected[0] = servers[0]
+
+        def _on_select(event):
+            sel = listbox.curselection()
+            if sel:
+                selected[0] = servers[sel[0]]
+
+        listbox.bind('<<ListboxSelect>>', _on_select)
+
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.pack(padx=12, pady=(4, 12))
+
+        def _do_attach():
+            ident = selected[0]
+            if ident is None:
+                return
+            self._attach_to_server(ident)
+            dlg.destroy()
+
+        def _cancel():
+            dlg.destroy()
+
+        ttk.Button(btn_frame, text='Attach', command=_do_attach,
+                    width=10).pack(side='left', padx=4)
+        ttk.Button(btn_frame, text='Cancel', command=_cancel,
+                    width=10).pack(side='left', padx=4)
+
+        dlg.protocol('WM_DELETE_WINDOW', _cancel)
+        dlg.wait_window()
+
+    def _find_servers(self) -> list:
+        """Discover alive servers from identity files."""
+        return ServerIdentity.discover()
+
+    def _attach_to_server(self, identity: ServerIdentity):
+        """Attach to a running server identified by its identity metadata."""
+        if not ServerIdentity.is_alive(identity.pid):
+            messagebox.showerror('Attach Failed',
+                                 f'Server PID {identity.pid} is no longer running.')
+            return
+
+        # Set API URL
+        self.api.base_url = f'http://{identity.host}:{identity.port}'
+        self._server_url_var.set(self.api.base_url)
+
+        # Start log tailer from the existing log file
+        self._start_log_tailer(identity.log_path)
+
+        # Start monitoring
+        if not self._monitoring:
+            self._monitoring = True
+            self.monitor_tab._start_monitoring()
+
+        # Update UI
+        self._state = STATE_REMOTE_ATTACHED
+        self._set_buttons_remote()
+        self._lbl_server_status.config(
+            text=f'Server: Attached to {identity.host}:{identity.port}',
+            foreground='green')
+        self._status_label.config(text='Attached to remote server')
+
+        started = time.strftime(
+            '%Y-%m-%d %H:%M:%S', time.localtime(identity.started_at))
+        self.logs_tab.add_log_line(
+            f'[attach] Attached to server PID {identity.pid} '
+            f'({identity.host}:{identity.port}, started {started})')
+
+        # Load recent log history
+        self._load_log_history(identity.log_path)
+
+    def _start_log_tailer(self, log_path: str):
+        """Start tailing a server log file into the log tab."""
+        if self._log_tailer is not None:
+            self._log_tailer.close()
+        self._log_tailer = LogFileTailer(log_path)
+        self._log_tailer.open(start_from_end=True)
+        # Poll for new log lines every 100ms
+        self._poll_log_tailer()
+
+    def _stop_log_tailer(self):
+        if self._log_tailer is not None:
+            self._log_tailer.close()
+            self._log_tailer = None
+
+    def _poll_log_tailer(self):
+        """Drain new lines from the log tailer into the log tab."""
+        if self._log_tailer is None:
+            return
+        lines = self._log_tailer.read_new_lines()
+        for line in lines:
+            try:
+                self._on_log_line(line)
+            except Exception:
+                pass
+        self.root.after(100, self._poll_log_tailer)
+
+    def _load_log_history(self, log_path: str):
+        """Load recent log history into the log tab on reattach."""
+        try:
+            tailer = LogFileTailer(log_path)
+            tailer.open(start_from_end=False)
+            history = tailer.read_tail(max_bytes=200000, max_lines=500)
+            tailer.close()
+            if history:
+                self.logs_tab.add_log_lines(history)
+                self.logs_tab.add_log_line(
+                    f'[attach] Loaded {len(history)} lines of history')
+        except Exception:
+            pass
+
+    def _start_auto_attach(self):
+        """On startup, check for alive servers and prompt to attach."""
+        servers = self._find_servers()
+        if not servers:
+            return
+        # Enable the attach button
+        self._btn_attach.config(state='normal')
+        # Only auto-prompt if no URL is already configured
+        if not self._server_url_var.get().strip():
+            self.root.after(100, lambda: self._prompt_attach_on_startup(servers))
+
+    def _prompt_attach_on_startup(self, servers):
+        """Ask the user if they want to attach to a running server."""
+        count = len(servers)
+        msg = (f'{count} running server{"s" if count > 1 else ""} found.\n'
+               'Do you want to attach to one?')
+        if messagebox.askyesno('Running Server Found', msg):
+            self._show_attach_dialog()
 
     def _open_browser(self):
         """Open server URL in default browser."""
@@ -631,6 +899,8 @@ class MainWindow:
         self._monitoring = True
         self.monitor_tab._start_monitoring()
         self._lbl_server_status.config(text='Monitor: waiting...', foreground='orange')
+        # Check for alive servers to attach to
+        self._start_auto_attach()
 
     def _connect_to_url(self):
         """Connect to the server URL entered in the toolbar."""
@@ -645,6 +915,8 @@ class MainWindow:
             self.monitor_tab._start_monitoring()
         # Force an immediate health check on the new URL
         self._do_health_check()
+        # Disable attach button when already connected
+        self._btn_attach.config(state='disabled')
 
     def _do_health_check(self):
         """Single-shot health check to update status bar."""
@@ -749,14 +1021,29 @@ class MainWindow:
         self._monitoring = False
         self.monitor_tab._stop_monitoring()
         self.sys_monitor.stop()
-        if self.process.is_running:
-            if messagebox.askyesno('Quit', 'Server is running. Stop and quit?'):
+        self._stop_log_tailer()
+        if self._state == STATE_LOCAL_ATTACHED and self.process.is_running:
+            response = messagebox.askyesnocancel(
+                'Quit',
+                'Server is running locally.\n\n'
+                'Yes = Stop server and quit\n'
+                'No  = Keep server running (detach) and quit\n'
+                'Cancel = Stay in GUI')
+            if response is None:
+                return  # Cancel
+            if response:
                 self._stop_server()
-                self.save_preferences()
-                self.root.destroy()
-        else:
-            self.save_preferences()
-            self.root.destroy()
+            else:
+                # Detach: save identity, server continues
+                if self._identity:
+                    self._identity.save()
+                self.process._callbacks['stdout'].clear()
+                self.process._callbacks['stopped'].clear()
+                self.logs_tab.add_log_line('[detach] GUI closing, server continues running.')
+        elif self._state == STATE_REMOTE_ATTACHED:
+            self.logs_tab.add_log_line('[disconnect] Disconnecting from remote server.')
+        self.save_preferences()
+        self.root.destroy()
 
 
 def main():
